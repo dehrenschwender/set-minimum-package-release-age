@@ -1,6 +1,6 @@
 # Set Minimum Package Release Age
 
-Bash scripts that configure a minimum package release age of 7 days across Python and JavaScript package managers. This helps protect against supply chain attacks by ensuring you only install packages that have been published for at least a week.
+Bash scripts that configure a minimum package release age across Python and JavaScript package managers. The default is 7 days, configurable via a CLI argument. This helps protect against supply chain attacks by ensuring you only install packages that have been published for at least the configured period.
 
 Separate scripts are provided for macOS and Linux to handle platform-specific config paths and `sed` syntax differences.
 
@@ -22,13 +22,21 @@ Separate scripts are provided for macOS and Linux to handle platform-specific co
 ### macOS
 
 ```bash
-bash set_package_min_age_macos.sh
+bash set_package_min_age_macos.sh          # default: 7 days
+bash set_package_min_age_macos.sh 14       # custom: 14 days
+bash set_package_min_age_macos.sh 1d       # custom: 1 day
+bash set_package_min_age_macos.sh --remove # remove all settings
+bash set_package_min_age_macos.sh --help   # show usage
 ```
 
 ### Linux
 
 ```bash
-bash set_package_min_age_linux.sh
+bash set_package_min_age_linux.sh          # default: 7 days
+bash set_package_min_age_linux.sh 14       # custom: 14 days
+bash set_package_min_age_linux.sh 1d       # custom: 1 day
+bash set_package_min_age_linux.sh --remove # remove all settings
+bash set_package_min_age_linux.sh --help   # show usage
 ```
 
 Both scripts are idempotent and safe to run multiple times:
@@ -36,6 +44,7 @@ Both scripts are idempotent and safe to run multiple times:
 - If a setting is **already correctly configured**, it is skipped entirely (no file modification)
 - If a setting exists with a **different value**, the current value is shown and updated
 - If a setting is **missing**, it is added
+- The `--remove` flag reverts all settings using the same backup and verification mechanism, and is also idempotent
 
 ## What It Does
 
@@ -43,7 +52,7 @@ For each supported package manager, the script:
 
 1. Checks if the setting is already correctly configured — skips if so
 2. Backs up the existing config file before making any changes
-3. Adds or updates the minimum release age setting to 7 days (converting to the unit each tool expects)
+3. Adds or updates the minimum release age setting (default 7 days, configurable via CLI argument) converting to the unit each tool expects
 4. Diffs the modified file against the backup to verify only expected lines changed
 5. If unexpected changes are detected, automatically **rolls back** to the backup
 6. Prints a summary showing which tools were skipped, updated, or rolled back
