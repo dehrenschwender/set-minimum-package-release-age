@@ -128,33 +128,35 @@ min-age = ${MIN_AGE_DAYS}d" "$pip_conf"
 # ─────────────────────────────────────────────
 # Python – uv
 # Config file: ~/.config/uv/uv.toml  (XDG)
-# Expected:    exclude-newer = "7 days"
+# Expected:    exclude-newer = "<RFC 3339 date 7 days ago>"
+# Note:        uv requires an absolute date, not a relative duration.
+#              Re-run this script periodically to keep the date current.
 # ─────────────────────────────────────────────
 setup_uv() {
     local uv_conf_dir="$HOME/.config/uv"
     local uv_conf="$uv_conf_dir/uv.toml"
-    local exclude_newer="${MIN_AGE_DAYS} days"
+    # Compute date N days ago in RFC 3339 format (GNU date)
+    local exclude_newer_date
+    exclude_newer_date=$(date -d "${MIN_AGE_DAYS} days ago" +%Y-%m-%dT00:00:00Z)
 
     mkdir -p "$uv_conf_dir"
     touch "$uv_conf"
 
-    # Check if already correctly configured
-    if grep -q "^exclude-newer = \"${exclude_newer}\"$" "$uv_conf" 2>/dev/null; then
-        echo "    [uv] Already set to \"${exclude_newer}\" in $uv_conf — skipping"
-        SKIPPED_TOOLS+=("uv")
-        return 0
-    fi
-
-    backup_if_exists "$uv_conf"
-
+    # Check if already set (any date is acceptable — we always update to keep it current)
     if grep -q '^exclude-newer' "$uv_conf" 2>/dev/null; then
         local current
         current=$(grep '^exclude-newer' "$uv_conf" | head -1 | sed 's/.*= *//')
-        echo "    [uv] Current value: exclude-newer = $current → updating to \"${exclude_newer}\""
-        sed -i "s|^exclude-newer.*|exclude-newer = \"${exclude_newer}\"|" "$uv_conf"
+        echo "    [uv] Current value: exclude-newer = $current → updating to \"${exclude_newer_date}\""
+        echo "    [uv] (uv requires an absolute date; re-run this script periodically to keep it current)"
+
+        backup_if_exists "$uv_conf"
+        sed -i "s|^exclude-newer.*|exclude-newer = \"${exclude_newer_date}\"|" "$uv_conf"
     else
-        echo "    [uv] Adding exclude-newer = \"${exclude_newer}\""
-        echo "exclude-newer = \"${exclude_newer}\"" >> "$uv_conf"
+        echo "    [uv] Adding exclude-newer = \"${exclude_newer_date}\""
+        echo "    [uv] (uv requires an absolute date; re-run this script periodically to keep it current)"
+
+        backup_if_exists "$uv_conf"
+        echo "exclude-newer = \"${exclude_newer_date}\"" >> "$uv_conf"
     fi
 
     verify_and_finalize "$uv_conf" "uv" 'exclude-newer' || true
