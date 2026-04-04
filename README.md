@@ -8,7 +8,7 @@ Separate scripts are provided for macOS and Linux to handle platform-specific co
 
 ### Python
 - **pip** — sets `min-age` in `~/.config/pip/pip.conf`
-- **uv** — sets `exclude-newer` in `~/.config/uv/uv.toml`
+- **uv** — sets `exclude-newer` in `~/.config/uv/uv.toml` (uses an absolute date; re-run periodically to keep current)
 
 ### JavaScript
 - **npm** — sets `min-release-age` in `~/.npmrc`
