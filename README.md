@@ -12,7 +12,7 @@ The repo now uses a shared core library plus thin platform wrappers:
 
 | Ecosystem | Tool | Mode | Config |
 |---|---|---|---|
-| Python | `pip` | native age gate | `~/.config/pip/pip.conf` |
+| Python | `pip` | upload-time age gate via `uploaded-prior-to` | `~/.config/pip/pip.conf` |
 | Python | `uv` | native age gate + per-package exceptions | `~/.config/uv/uv.toml` |
 | JavaScript | `npm` | native age gate | `~/.npmrc` |
 | JavaScript | `pnpm` | native age gate + selectors to exclude | `~/.config/pnpm/rc` (Linux) / `~/Library/Preferences/pnpm/rc` (macOS) |
@@ -24,21 +24,24 @@ The repo now uses a shared core library plus thin platform wrappers:
 
 | Tool | Native Age Gate | Native Exceptions | Workaround Only | Scoped Removal | Runtime Version Enforcement |
 |---|---|---|---|---|---|
-| `pip` | yes | no | no | yes | no |
+| `pip` | yes | no | no | yes | yes |
 | `uv` | yes | yes | no | yes | no |
 | `npm` | yes | no | no | yes | yes |
 | `pnpm` | yes | yes | no | yes | yes |
-| `bun` | yes | yes | no | yes | no |
+| `bun` | yes | yes | no | yes | no documented minimum |
 | `yarn classic (v1)` | no | no | `cache-min` TTL workaround | yes | no |
-| `yarn berry (v2+)` | yes | yes | no | yes | yes for exception requests |
+| `yarn berry (v2+)` | yes | yes | no | yes | yes |
 
 ## Version Notes
 
+- `pip` upload-time gating requires pip `26.0+` and is written as `uploaded-prior-to` under `[install]`.
 - `npm` age gating requires npm `11.10.0+`.
 - `pnpm` `minimumReleaseAge` requires pnpm `10.16.0+`.
 - `pnpm` exclusion patterns require pnpm `10.17.0+`.
 - `pnpm` version-selector exclusions require pnpm `10.19.0+`.
-- Yarn Berry support uses `npmMinimalAgeGate` and `npmPreapprovedPackages` from current Yarn docs.
+- Yarn Berry `npmMinimalAgeGate` and `npmPreapprovedPackages` require Yarn `4.10.0+`.
+- `uv` uses `exclude-newer` / `exclude-newer-package`; the current docs confirm support, but this repo does not pin an official minimum introducing version.
+- `bun` uses `minimumReleaseAge` / `minimumReleaseAgeExcludes`; the current docs confirm support, but this repo does not pin an official minimum introducing version.
 - Yarn Classic only supports `cache-min`, which is a cache freshness workaround rather than native publish-date filtering.
 
 ## Usage
@@ -130,7 +133,9 @@ For each supported tool, the script:
 5. Runs a preflight version check for installed tools whose native age-gate features have documented minimum versions.
 6. Validates every supported tool by checking the config written for that tool.
 7. Diffs the modified file against the backup and rolls back unexpected changes.
-8. Prints a summary of updated, skipped, failed, and validated tools.
+8. Prints tool readiness with detected binary paths, then a merged results table covering both config changes and validation status.
+
+`pip` is written as an absolute `uploaded-prior-to` timestamp under `[install]`.
 
 `uv` is still written with an absolute `exclude-newer` timestamp, so the scripts also manage a daily cron job that refreshes the date.
 

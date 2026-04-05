@@ -187,9 +187,9 @@ install_fake_detection_tools() {
     local include_bun="${2:-0}"
     local npm_version="${3:-11.10.0}"
     local pnpm_version="${4:-10.19.0}"
-    local bun_version="${5:-1.2.0}"
+    local bun_version="${5:-1.3.2}"
     local uv_version="${6:-0.7.0}"
-    local pip_version="${7:-25.0}"
+    local pip_version="${7:-26.0}"
 
     cat > "$TEST_BIN_DIR/pip3" <<EOF
 #!/usr/bin/env bash
@@ -282,9 +282,9 @@ install_fake_validation_tools() {
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "--version" ]]; then
-    printf 'pip 25.0 from %s\n' "$0"
+    printf 'pip 26.0 from %s\n' "$0"
 elif [[ "${1:-}" == "config" && "${2:-}" == "list" ]]; then
-    printf 'global.min-age='\''7d'\''\n'
+    printf 'install.uploaded-prior-to='\''2026-03-29T00:00:00Z'\''\n'
 else
     exit 1
 fi

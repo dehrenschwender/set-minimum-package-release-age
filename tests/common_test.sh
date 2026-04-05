@@ -253,8 +253,8 @@ test_setup_remove_pip() {
 
     local pip_conf="$HOME/.config/pip/pip.conf"
     setup_pip
-    assert_file_contains "$pip_conf" "[global]"
-    assert_file_contains "$pip_conf" "min-age = 7d"
+    assert_file_contains "$pip_conf" "[install]"
+    assert_file_contains "$pip_conf" "uploaded-prior-to = 2026-03-29T00:00:00Z"
 
     reset_status_arrays
     setup_pip
@@ -263,7 +263,8 @@ test_setup_remove_pip() {
     printf '[global]\nmin-age = 2d\n' > "$pip_conf"
     reset_status_arrays
     setup_pip
-    assert_file_contains "$pip_conf" "min-age = 7d"
+    assert_file_contains "$pip_conf" "uploaded-prior-to = 2026-03-29T00:00:00Z"
+    assert_file_not_contains "$pip_conf" "min-age = 2d"
     assert_array_contains "pip" "${UPDATED_TOOLS[@]-}"
 
     reset_status_arrays
@@ -468,7 +469,7 @@ test_print_tool_overview_yarn_v1() {
     output=$(print_tool_overview)
 
     assert_contains "$output" "VERSION"
-    assert_contains "$output" "pip              yes        25.0"
+    assert_contains "$output" "pip              yes        26.0"
     assert_contains "$output" "$TEST_BIN_DIR/pip3"
     assert_contains "$output" "npm              yes        11.10.0"
     assert_contains "$output" "bun              no         n/a          not found"
@@ -493,7 +494,7 @@ test_print_tool_overview_yarn_berry() {
 
 test_preflight_npm_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.7.0" 0 "11.9.0"
+    install_fake_detection_tools "4.10.0" 0 "11.9.0"
     load_common_library
 
     local output status
@@ -510,9 +511,26 @@ test_preflight_npm_version_failure() {
     cleanup_test_env
 }
 
+test_preflight_pip_version_failure() {
+    setup_test_env
+    install_fake_detection_tools "4.10.0" 0 "11.10.0" "10.19.0" "1.3.2" "0.7.0" "25.9"
+    load_common_library
+
+    local output status
+    set +e
+    output=$(main 4 2>&1)
+    status=$?
+    set -e
+
+    assert_eq 1 "$status"
+    assert_contains "$output" "uploaded-prior-to requires >= 26.0"
+    assert_not_exists "$HOME/.config/pip/pip.conf"
+    cleanup_test_env
+}
+
 test_preflight_pnpm_base_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.7.0" 0 "11.10.0" "10.15.0"
+    install_fake_detection_tools "4.10.0" 0 "11.10.0" "10.15.0"
     load_common_library
 
     local output status
@@ -530,7 +548,7 @@ test_preflight_pnpm_base_version_failure() {
 
 test_preflight_pnpm_pattern_exception_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.7.0" 0 "11.10.0" "10.16.5"
+    install_fake_detection_tools "4.10.0" 0 "11.10.0" "10.16.5"
     load_common_library
 
     local output status
@@ -546,7 +564,7 @@ test_preflight_pnpm_pattern_exception_version_failure() {
 
 test_preflight_pnpm_version_selector_failure() {
     setup_test_env
-    install_fake_detection_tools "4.7.0" 0 "11.10.0" "10.18.0"
+    install_fake_detection_tools "4.10.0" 0 "11.10.0" "10.18.0"
     load_common_library
 
     local output status
@@ -560,27 +578,27 @@ test_preflight_pnpm_version_selector_failure() {
     cleanup_test_env
 }
 
-test_preflight_yarn_berry_exception_requires_yarn2() {
+test_preflight_yarn_berry_version_failure() {
     setup_test_env
-    install_fake_detection_tools "1.22.22"
+    install_fake_detection_tools "4.9.9"
     load_common_library
 
     local output status
     set +e
-    output=$(main 4 --exception 'yarn-berry:@myorg/*' 2>&1)
+    output=$(main 4 2>&1)
     status=$?
     set -e
 
     assert_eq 1 "$status"
-    assert_contains "$output" "yarn-berry exceptions require Yarn >= 2"
+    assert_contains "$output" "npmMinimalAgeGate requires >= 4.10.0"
     assert_not_exists "$HOME/.yarnrc.yml"
     cleanup_test_env
 }
 
-test_main_output_includes_preflight_and_configuration() {
+test_main_output_includes_readiness_and_results() {
     setup_test_env
     install_fake_crontab
-    install_fake_detection_tools "4.7.0"
+    install_fake_detection_tools "4.10.0"
     load_common_library
 
     local output
@@ -592,11 +610,20 @@ test_main_output_includes_preflight_and_configuration() {
 
     assert_contains "$output" "minimum age: 4 days"
     assert_contains "$output" "Tool readiness"
-    assert_contains "$output" "Configuration"
-    assert_contains "$output" "Validation"
-    assert_contains "$output" "pip              yes        25.0         ok         no runtime gate"
-    assert_contains "$output" "pnpm             yes        10.19.0      ok         minimum-release-age requires >= 10.16.0"
-    assert_before "$output" "Tool readiness" "Configuration"
+    assert_contains "$output" "PATH"
+    assert_contains "$output" "Results"
+    assert_contains "$output" "pip              yes        26.0"
+    assert_contains "$output" "$TEST_BIN_DIR/pip3"
+    assert_contains "$output" "uploaded-prior-to requires >= 26.0"
+    assert_contains "$output" "pnpm             yes        10.19.0"
+    assert_contains "$output" "minimum-release-age requires >= 10.16.0"
+    assert_contains "$output" "uv cron          added      --"
+    assert_contains "$output" "uploaded-prior-to = 2026-03-29T00:00:00Z (4d window) | uploaded-prior-to matches"
+    assert_contains "$output" "exclude-newer = \"2026-03-29T00:00:00Z\"; exceptions=1 | exclude-newer settings match"
+    assert_before "$output" "Tool readiness" "Results"
+    [[ "$output" != *"Configuration"* ]] || fail "did not expect Configuration section"
+    [[ "$output" != *"Validation"* ]] || fail "did not expect Validation section"
+    [[ "$output" != *"uv exceptions"* ]] || fail "did not expect separate uv exceptions row"
     assert_contains "$output" "validated"
     cleanup_test_env
 }
@@ -611,15 +638,15 @@ test_main_remove_output_includes_tool_overview() {
     output=$(main --remove)
 
     assert_contains "$output" "REMOVE MODE"
-    assert_contains "$output" "Tool overview"
-    assert_before "$output" "Tool overview" "Removing settings"
+    assert_contains "$output" "Tool readiness"
+    assert_before "$output" "Tool readiness" "Removing settings"
     cleanup_test_env
 }
 
 test_main_scoped_remove_output_includes_tool_overview() {
     setup_test_env
     prepare_scoped_remove_fixtures
-    install_fake_detection_tools "4.7.0"
+    install_fake_detection_tools "4.10.0"
 
     local output
     output=$(main --remove-tool pip --remove-tool uv)
@@ -635,7 +662,7 @@ test_main_scoped_remove_output_includes_tool_overview() {
 test_scoped_remove_only_pip() {
     setup_test_env
     prepare_scoped_remove_fixtures
-    install_fake_detection_tools "4.7.0"
+    install_fake_detection_tools "4.10.0"
 
     main --remove-tool pip >/dev/null
 
@@ -648,7 +675,7 @@ test_scoped_remove_only_pip() {
 test_scoped_remove_only_uv() {
     setup_test_env
     prepare_scoped_remove_fixtures
-    install_fake_detection_tools "4.7.0"
+    install_fake_detection_tools "4.10.0"
 
     main --remove-tool uv >/dev/null
 
@@ -660,7 +687,7 @@ test_scoped_remove_only_uv() {
 test_scoped_remove_only_uv_cron() {
     setup_test_env
     prepare_scoped_remove_fixtures
-    install_fake_detection_tools "4.7.0"
+    install_fake_detection_tools "4.10.0"
 
     main --remove-tool uv-cron >/dev/null
 
@@ -672,7 +699,7 @@ test_scoped_remove_only_uv_cron() {
 test_scoped_remove_uv_and_uv_cron() {
     setup_test_env
     prepare_scoped_remove_fixtures
-    install_fake_detection_tools "4.7.0"
+    install_fake_detection_tools "4.10.0"
 
     main --remove-tool uv --remove-tool uv-cron >/dev/null
 
@@ -684,7 +711,7 @@ test_scoped_remove_uv_and_uv_cron() {
 test_scoped_remove_only_yarn_berry() {
     setup_test_env
     prepare_scoped_remove_fixtures
-    install_fake_detection_tools "4.7.0"
+    install_fake_detection_tools "4.10.0"
 
     main --remove-tool yarn-berry >/dev/null
 
@@ -710,11 +737,12 @@ run_test "validate_configs" test_validate_configs || true
 run_test "print_tool_overview_yarn_v1" test_print_tool_overview_yarn_v1 || true
 run_test "print_tool_overview_yarn_berry" test_print_tool_overview_yarn_berry || true
 run_test "preflight_npm_version_failure" test_preflight_npm_version_failure || true
+run_test "preflight_pip_version_failure" test_preflight_pip_version_failure || true
 run_test "preflight_pnpm_base_version_failure" test_preflight_pnpm_base_version_failure || true
 run_test "preflight_pnpm_pattern_exception_version_failure" test_preflight_pnpm_pattern_exception_version_failure || true
 run_test "preflight_pnpm_version_selector_failure" test_preflight_pnpm_version_selector_failure || true
-run_test "preflight_yarn_berry_exception_requires_yarn2" test_preflight_yarn_berry_exception_requires_yarn2 || true
-run_test "main_output_includes_preflight_and_configuration" test_main_output_includes_preflight_and_configuration || true
+run_test "preflight_yarn_berry_version_failure" test_preflight_yarn_berry_version_failure || true
+run_test "main_output_includes_readiness_and_results" test_main_output_includes_readiness_and_results || true
 run_test "main_remove_output_includes_tool_overview" test_main_remove_output_includes_tool_overview || true
 run_test "main_scoped_remove_output_includes_tool_overview" test_main_scoped_remove_output_includes_tool_overview || true
 run_test "scoped_remove_only_pip" test_scoped_remove_only_pip || true
