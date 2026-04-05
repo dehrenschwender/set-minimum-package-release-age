@@ -185,28 +185,57 @@ EOF
 install_fake_detection_tools() {
     local yarn_version="${1:-1.22.22}"
     local include_bun="${2:-0}"
+    local npm_version="${3:-11.10.0}"
+    local pnpm_version="${4:-10.19.0}"
+    local bun_version="${5:-1.2.0}"
+    local uv_version="${6:-0.7.0}"
+    local pip_version="${7:-25.0}"
 
-    cat > "$TEST_BIN_DIR/pip3" <<'EOF'
+    cat > "$TEST_BIN_DIR/pip3" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf 'pip %s from %s\n' "$pip_version" "\$0"
+    exit 0
+fi
+
 printf 'pip3 test binary\n'
 EOF
 
-    cat > "$TEST_BIN_DIR/uv" <<'EOF'
+    cat > "$TEST_BIN_DIR/uv" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf 'uv %s\n' "$uv_version"
+    exit 0
+fi
+
 printf 'uv test binary\n'
 EOF
 
-    cat > "$TEST_BIN_DIR/npm" <<'EOF'
+    cat > "$TEST_BIN_DIR/npm" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf '%s\n' "$npm_version"
+    exit 0
+fi
+
 printf 'npm test binary\n'
 EOF
 
-    cat > "$TEST_BIN_DIR/pnpm" <<'EOF'
+    cat > "$TEST_BIN_DIR/pnpm" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf '%s\n' "$pnpm_version"
+    exit 0
+fi
+
 printf 'pnpm test binary\n'
 EOF
 
@@ -225,9 +254,15 @@ EOF
     chmod +x "$TEST_BIN_DIR/pip3" "$TEST_BIN_DIR/uv" "$TEST_BIN_DIR/npm" "$TEST_BIN_DIR/pnpm" "$TEST_BIN_DIR/yarn"
 
     if [[ "$include_bun" == "1" ]]; then
-        cat > "$TEST_BIN_DIR/bun" <<'EOF'
+        cat > "$TEST_BIN_DIR/bun" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf '%s\n' "$bun_version"
+    exit 0
+fi
+
 printf 'bun test binary\n'
 EOF
         chmod +x "$TEST_BIN_DIR/bun"
@@ -238,13 +273,17 @@ EOF
 
 install_fake_validation_tools() {
     local yarn_version="${1:-1.22.22}"
+    local npm_version="${2:-11.10.0}"
+    local pnpm_version="${3:-10.19.0}"
 
-    install_fake_detection_tools "$yarn_version" 1
+    install_fake_detection_tools "$yarn_version" 1 "$npm_version" "$pnpm_version"
 
     cat > "$TEST_BIN_DIR/pip3" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" == "config" && "${2:-}" == "list" ]]; then
+if [[ "${1:-}" == "--version" ]]; then
+    printf 'pip 25.0 from %s\n' "$0"
+elif [[ "${1:-}" == "config" && "${2:-}" == "list" ]]; then
     printf 'global.min-age='\''7d'\''\n'
 else
     exit 1
@@ -254,29 +293,35 @@ EOF
     cat > "$TEST_BIN_DIR/uv" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" == "self" && "${2:-}" == "version" ]]; then
+if [[ "${1:-}" == "--version" ]]; then
+    printf 'uv 0.7.0\n'
+elif [[ "${1:-}" == "self" && "${2:-}" == "version" ]]; then
     printf 'uv 0.7.0\n'
 else
     exit 1
 fi
 EOF
 
-    cat > "$TEST_BIN_DIR/npm" <<'EOF'
+    cat > "$TEST_BIN_DIR/npm" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" == "config" && "${2:-}" == "list" ]]; then
+if [[ "\${1:-}" == "--version" ]]; then
+    printf '%s\n' "$npm_version"
+elif [[ "\${1:-}" == "config" && "\${2:-}" == "list" ]]; then
     printf '; before = 2026-03-29T00:00:00.000Z\n'
 else
     exit 1
 fi
 EOF
 
-    cat > "$TEST_BIN_DIR/pnpm" <<'EOF'
+    cat > "$TEST_BIN_DIR/pnpm" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${1:-}" == "config" && "${2:-}" == "get" && "${3:-}" == "minimum-release-age" ]]; then
+if [[ "\${1:-}" == "--version" ]]; then
+    printf '%s\n' "$pnpm_version"
+elif [[ "\${1:-}" == "config" && "\${2:-}" == "get" && "\${3:-}" == "minimum-release-age" ]]; then
     printf '1440\n'
-elif [[ "${1:-}" == "config" && "${2:-}" == "get" && "${3:-}" == "minimum-release-age-exclude" ]]; then
+elif [[ "\${1:-}" == "config" && "\${2:-}" == "get" && "\${3:-}" == "minimum-release-age-exclude" ]]; then
     printf 'webpack,@myorg/*\n'
 else
     exit 1

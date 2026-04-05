@@ -11,6 +11,22 @@ reset_status_arrays() {
     UPDATED_TOOLS=()
     VALIDATED_TOOLS=()
     VALIDATION_FAILED_TOOLS=()
+    PREFLIGHT_FAILED_TOOLS=()
+}
+
+prepare_scoped_remove_fixtures() {
+    install_fake_crontab
+    load_common_library
+    parse_args 4 \
+        --exception uv:setuptools=false \
+        --exception 'yarn-berry:@myorg/*' \
+        --exception bun:typescript
+    setup_pip
+    setup_uv
+    setup_cron_uv
+    setup_bun
+    setup_yarn_classic
+    setup_yarn_berry
 }
 
 test_usage() {
@@ -24,8 +40,8 @@ test_usage() {
     set -e
 
     assert_eq 0 "$status"
-    assert_contains "$output" "--uv-exception RULE"
-    assert_contains "$output" "--yarn-exception ITEM"
+    assert_contains "$output" "--exception SPEC"
+    assert_contains "$output" "--remove-tool TOOL"
     cleanup_test_env
 }
 
@@ -36,14 +52,25 @@ test_parse_args_success() {
     parse_args
     assert_eq "7" "$MIN_AGE_DAYS"
     [[ "$REMOVE_MODE" == false ]] || fail "remove mode should be false by default"
+    [[ "$REMOVE_SCOPED_MODE" == false ]] || fail "scoped remove mode should be false by default"
 
-    parse_args 14d --uv-exception "setuptools=false" --pnpm-exception webpack --bun-exception typescript --yarn-exception "@myorg/*"
+    parse_args 14d \
+        --exception uv:setuptools=false \
+        --exception pnpm:webpack \
+        --exception bun:typescript \
+        --exception 'yarn-berry:@myorg/*'
     assert_eq "14" "$MIN_AGE_DAYS"
     assert_eq "1" "${#UV_EXCEPTIONS[@]}"
     assert_eq "1" "${#PNPM_EXCEPTIONS[@]}"
     assert_eq "1" "${#BUN_EXCEPTIONS[@]}"
     assert_eq "1" "${#YARN_EXCEPTIONS[@]}"
     assert_eq "setuptools=false" "${UV_EXCEPTIONS[0]}"
+
+    parse_args --remove-tool pip --remove-tool uv --remove-tool uv
+    [[ "$REMOVE_SCOPED_MODE" == true ]] || fail "scoped remove mode should be true"
+    assert_eq "2" "${#REMOVE_TOOLS[@]}"
+    assert_eq "pip" "${REMOVE_TOOLS[0]}"
+    assert_eq "uv" "${REMOVE_TOOLS[1]}"
     cleanup_test_env
 }
 
@@ -72,14 +99,84 @@ test_parse_args_failures() {
     status=$?
     set -e
     assert_eq 1 "$status"
-    assert_contains "$output" "--remove cannot be combined"
+    assert_contains "$output" "removal modes cannot be combined with a days argument"
+
+    set +e
+    output=$( ( parse_args --remove-tool pip 7 ) 2>&1 )
+    status=$?
+    set -e
+    assert_eq 1 "$status"
+    assert_contains "$output" "removal modes cannot be combined with a days argument"
+
+    set +e
+    output=$( ( parse_args --remove --remove-tool pip ) 2>&1 )
+    status=$?
+    set -e
+    assert_eq 1 "$status"
+    assert_contains "$output" "--remove cannot be combined with --remove-tool"
+
+    set +e
+    output=$( ( parse_args --exception uv:setuptools=false --remove ) 2>&1 )
+    status=$?
+    set -e
+    assert_eq 1 "$status"
+    assert_contains "$output" "cannot be combined with --exception"
+
+    set +e
+    output=$( ( parse_args --exception pip:foo ) 2>&1 )
+    status=$?
+    set -e
+    assert_eq 1 "$status"
+    assert_contains "$output" "does not support native exceptions"
+
+    set +e
+    output=$( ( parse_args --exception npm:foo ) 2>&1 )
+    status=$?
+    set -e
+    assert_eq 1 "$status"
+    assert_contains "$output" "does not support native exceptions"
+
+    set +e
+    output=$( ( parse_args --exception uv:badvalue ) 2>&1 )
+    status=$?
+    set -e
+    assert_eq 1 "$status"
+    assert_contains "$output" "uv exceptions must use package=false"
+
+    set +e
+    output=$( ( parse_args --exception pnpm: ) 2>&1 )
+    status=$?
+    set -e
+    assert_eq 1 "$status"
+    assert_contains "$output" "--exception must use the format"
+
+    set +e
+    output=$( ( parse_args --exception bun: ) 2>&1 )
+    status=$?
+    set -e
+    assert_eq 1 "$status"
+    assert_contains "$output" "--exception must use the format"
+
+    set +e
+    output=$( ( parse_args --exception yarn-berry: ) 2>&1 )
+    status=$?
+    set -e
+    assert_eq 1 "$status"
+    assert_contains "$output" "--exception must use the format"
+
+    set +e
+    output=$( ( parse_args --remove-tool wat ) 2>&1 )
+    status=$?
+    set -e
+    assert_eq 1 "$status"
+    assert_contains "$output" "Unknown remove tool"
 
     set +e
     output=$( ( parse_args --uv-exception badvalue ) 2>&1 )
     status=$?
     set -e
     assert_eq 1 "$status"
-    assert_contains "$output" "--uv-exception must use the format"
+    assert_contains "$output" "Unknown option"
 
     set +e
     output=$( ( parse_args --wat ) 2>&1 )
@@ -179,7 +276,7 @@ test_setup_remove_uv() {
     setup_test_env
     install_fake_crontab
     load_common_library
-    parse_args --uv-exception "setuptools=false" --uv-exception "@scope/pkg=30 days"
+    parse_args --exception uv:setuptools=false --exception uv:@scope/pkg=30\ days
 
     local uv_conf="$HOME/.config/uv/uv.toml"
     setup_uv
@@ -241,7 +338,7 @@ test_setup_remove_npm() {
 test_setup_remove_pnpm() {
     setup_test_env
     load_common_library "Test" "$HOME/.config/pnpm/rc"
-    parse_args 7 --pnpm-exception webpack --pnpm-exception "@myorg/*"
+    parse_args 7 --exception pnpm:webpack --exception 'pnpm:@myorg/*'
 
     setup_pnpm
     assert_file_contains "$PNPM_RC_PATH" "minimum-release-age=10080"
@@ -261,7 +358,7 @@ test_setup_remove_pnpm() {
 test_setup_remove_bun() {
     setup_test_env
     load_common_library
-    parse_args 3 --bun-exception "@types/node" --bun-exception typescript
+    parse_args 3 --exception bun:@types/node --exception bun:typescript
 
     local bunfig="$HOME/.bunfig.toml"
     printf '[install]\nlinker = "isolated"\n' > "$bunfig"
@@ -308,7 +405,7 @@ test_setup_remove_yarn_classic() {
 test_setup_remove_yarn_berry() {
     setup_test_env
     load_common_library
-    parse_args 5 --yarn-exception "@myorg/*" --yarn-exception "@types/*"
+    parse_args 5 --exception 'yarn-berry:@myorg/*' --exception 'yarn-berry:@types/*'
 
     local yarnrc="$HOME/.yarnrc.yml"
     setup_yarn_berry
@@ -328,7 +425,11 @@ test_setup_remove_yarn_berry() {
 test_validate_configs() {
     setup_test_env
     load_common_library
-    parse_args 7 --uv-exception "setuptools=false" --pnpm-exception webpack --bun-exception typescript --yarn-exception "@myorg/*"
+    parse_args 7 \
+        --exception uv:setuptools=false \
+        --exception pnpm:webpack \
+        --exception bun:typescript \
+        --exception 'yarn-berry:@myorg/*'
     install_fake_crontab
 
     setup_pip
@@ -344,7 +445,9 @@ test_validate_configs() {
     assert_array_contains "uv" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "npm" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "pnpm" "${VALIDATED_TOOLS[@]-}"
+    assert_array_contains "bun" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "yarn-classic" "${VALIDATED_TOOLS[@]-}"
+    assert_array_contains "yarn-berry" "${VALIDATED_TOOLS[@]-}"
 
     cleanup_test_env
 
@@ -352,17 +455,6 @@ test_validate_configs() {
     load_common_library
     validate_configs
     assert_eq "0" "${#VALIDATED_TOOLS[@]}"
-    cleanup_test_env
-}
-
-test_validate_configs_yarn_berry() {
-    setup_test_env
-    load_common_library
-    parse_args 4 --yarn-exception "@myorg/*"
-    setup_yarn_berry
-
-    validate_configs
-    assert_array_contains "yarn-berry" "${VALIDATED_TOOLS[@]-}"
     cleanup_test_env
 }
 
@@ -375,12 +467,13 @@ test_print_tool_overview_yarn_v1() {
     expected_yarn_path="$TEST_BIN_DIR/yarn"
     output=$(print_tool_overview)
 
-    assert_contains "$output" "Tool overview"
-    assert_contains "$output" "pip              yes"
+    assert_contains "$output" "VERSION"
+    assert_contains "$output" "pip              yes        25.0"
     assert_contains "$output" "$TEST_BIN_DIR/pip3"
-    assert_contains "$output" "bun              no         not found"
-    assert_contains "$output" "yarn v1          yes        $expected_yarn_path"
-    assert_contains "$output" "yarn v2+         no         $expected_yarn_path"
+    assert_contains "$output" "npm              yes        11.10.0"
+    assert_contains "$output" "bun              no         n/a          not found"
+    assert_contains "$output" "yarn v1          yes        1.22.22      $expected_yarn_path"
+    assert_contains "$output" "yarn v2+         no         1.22.22      $expected_yarn_path"
     cleanup_test_env
 }
 
@@ -393,26 +486,117 @@ test_print_tool_overview_yarn_berry() {
     expected_yarn_path="$TEST_BIN_DIR/yarn"
     output=$(print_tool_overview)
 
-    assert_contains "$output" "yarn v1          no         $expected_yarn_path"
-    assert_contains "$output" "yarn v2+         yes        $expected_yarn_path"
+    assert_contains "$output" "yarn v1          no         4.7.0        $expected_yarn_path"
+    assert_contains "$output" "yarn v2+         yes        4.7.0        $expected_yarn_path"
     cleanup_test_env
 }
 
-test_main_output_includes_tool_overview() {
+test_preflight_npm_version_failure() {
     setup_test_env
-    install_fake_crontab
+    install_fake_detection_tools "4.7.0" 0 "11.9.0"
+    load_common_library
+
+    local output status
+    set +e
+    output=$(main 4 2>&1)
+    status=$?
+    set -e
+
+    assert_eq 1 "$status"
+    assert_contains "$output" "Tool readiness"
+    assert_contains "$output" "npm"
+    assert_contains "$output" "min-release-age requires >= 11.10.0"
+    assert_not_exists "$HOME/.npmrc"
+    cleanup_test_env
+}
+
+test_preflight_pnpm_base_version_failure() {
+    setup_test_env
+    install_fake_detection_tools "4.7.0" 0 "11.10.0" "10.15.0"
+    load_common_library
+
+    local output status
+    set +e
+    output=$(main 4 2>&1)
+    status=$?
+    set -e
+
+    assert_eq 1 "$status"
+    assert_contains "$output" "pnpm"
+    assert_contains "$output" "minimum-release-age requires >= 10.16.0"
+    assert_not_exists "$PNPM_RC_PATH"
+    cleanup_test_env
+}
+
+test_preflight_pnpm_pattern_exception_version_failure() {
+    setup_test_env
+    install_fake_detection_tools "4.7.0" 0 "11.10.0" "10.16.5"
+    load_common_library
+
+    local output status
+    set +e
+    output=$(main 4 --exception 'pnpm:@myorg/*' 2>&1)
+    status=$?
+    set -e
+
+    assert_eq 1 "$status"
+    assert_contains "$output" "minimum-release-age exceptions requires >= 10.17.0"
+    cleanup_test_env
+}
+
+test_preflight_pnpm_version_selector_failure() {
+    setup_test_env
+    install_fake_detection_tools "4.7.0" 0 "11.10.0" "10.18.0"
+    load_common_library
+
+    local output status
+    set +e
+    output=$(main 4 --exception pnpm:webpack@4.47.0 2>&1)
+    status=$?
+    set -e
+
+    assert_eq 1 "$status"
+    assert_contains "$output" "minimum-release-age exceptions requires >= 10.19.0"
+    cleanup_test_env
+}
+
+test_preflight_yarn_berry_exception_requires_yarn2() {
+    setup_test_env
     install_fake_detection_tools "1.22.22"
     load_common_library
 
+    local output status
+    set +e
+    output=$(main 4 --exception 'yarn-berry:@myorg/*' 2>&1)
+    status=$?
+    set -e
+
+    assert_eq 1 "$status"
+    assert_contains "$output" "yarn-berry exceptions require Yarn >= 2"
+    assert_not_exists "$HOME/.yarnrc.yml"
+    cleanup_test_env
+}
+
+test_main_output_includes_preflight_and_configuration() {
+    setup_test_env
+    install_fake_crontab
+    install_fake_detection_tools "4.7.0"
+    load_common_library
+
     local output
-    output=$(main 4 --uv-exception "setuptools=false" --pnpm-exception webpack --bun-exception typescript --yarn-exception "@myorg/*")
+    output=$(main 4 \
+        --exception uv:setuptools=false \
+        --exception pnpm:webpack \
+        --exception bun:typescript \
+        --exception 'yarn-berry:@myorg/*')
 
     assert_contains "$output" "minimum age: 4 days"
-    assert_contains "$output" "Tool overview"
-    assert_contains "$output" "$TEST_BIN_DIR/pip3"
-    assert_contains "$output" "bun              no         not found"
-    assert_before "$output" "Tool overview" "Configuration"
-    assert_contains "$output" "updated"
+    assert_contains "$output" "Tool readiness"
+    assert_contains "$output" "Configuration"
+    assert_contains "$output" "Validation"
+    assert_contains "$output" "pip              yes        25.0         ok         no runtime gate"
+    assert_contains "$output" "pnpm             yes        10.19.0      ok         minimum-release-age requires >= 10.16.0"
+    assert_before "$output" "Tool readiness" "Configuration"
     assert_contains "$output" "validated"
     cleanup_test_env
 }
@@ -429,7 +613,83 @@ test_main_remove_output_includes_tool_overview() {
     assert_contains "$output" "REMOVE MODE"
     assert_contains "$output" "Tool overview"
     assert_before "$output" "Tool overview" "Removing settings"
-    assert_contains "$output" "removed"
+    cleanup_test_env
+}
+
+test_main_scoped_remove_output_includes_tool_overview() {
+    setup_test_env
+    prepare_scoped_remove_fixtures
+    install_fake_detection_tools "4.7.0"
+
+    local output
+    output=$(main --remove-tool pip --remove-tool uv)
+
+    assert_contains "$output" "REMOVE MODE (SCOPED)"
+    assert_contains "$output" "Removing selected settings"
+    assert_not_exists "$HOME/.config/pip/pip.conf"
+    assert_not_exists "$HOME/.config/uv/uv.toml"
+    assert_exists "$TEST_CRONTAB_FILE"
+    cleanup_test_env
+}
+
+test_scoped_remove_only_pip() {
+    setup_test_env
+    prepare_scoped_remove_fixtures
+    install_fake_detection_tools "4.7.0"
+
+    main --remove-tool pip >/dev/null
+
+    assert_not_exists "$HOME/.config/pip/pip.conf"
+    assert_exists "$HOME/.config/uv/uv.toml"
+    assert_exists "$HOME/.yarnrc.yml"
+    cleanup_test_env
+}
+
+test_scoped_remove_only_uv() {
+    setup_test_env
+    prepare_scoped_remove_fixtures
+    install_fake_detection_tools "4.7.0"
+
+    main --remove-tool uv >/dev/null
+
+    assert_not_exists "$HOME/.config/uv/uv.toml"
+    assert_exists "$TEST_CRONTAB_FILE"
+    cleanup_test_env
+}
+
+test_scoped_remove_only_uv_cron() {
+    setup_test_env
+    prepare_scoped_remove_fixtures
+    install_fake_detection_tools "4.7.0"
+
+    main --remove-tool uv-cron >/dev/null
+
+    assert_not_exists "$TEST_CRONTAB_FILE"
+    assert_exists "$HOME/.config/uv/uv.toml"
+    cleanup_test_env
+}
+
+test_scoped_remove_uv_and_uv_cron() {
+    setup_test_env
+    prepare_scoped_remove_fixtures
+    install_fake_detection_tools "4.7.0"
+
+    main --remove-tool uv --remove-tool uv-cron >/dev/null
+
+    assert_not_exists "$HOME/.config/uv/uv.toml"
+    assert_not_exists "$TEST_CRONTAB_FILE"
+    cleanup_test_env
+}
+
+test_scoped_remove_only_yarn_berry() {
+    setup_test_env
+    prepare_scoped_remove_fixtures
+    install_fake_detection_tools "4.7.0"
+
+    main --remove-tool yarn-berry >/dev/null
+
+    assert_not_exists "$HOME/.yarnrc.yml"
+    assert_exists "$HOME/.yarnrc"
     cleanup_test_env
 }
 
@@ -447,10 +707,20 @@ run_test "setup_remove_bun" test_setup_remove_bun || true
 run_test "setup_remove_yarn_classic" test_setup_remove_yarn_classic || true
 run_test "setup_remove_yarn_berry" test_setup_remove_yarn_berry || true
 run_test "validate_configs" test_validate_configs || true
-run_test "validate_configs_yarn_berry" test_validate_configs_yarn_berry || true
 run_test "print_tool_overview_yarn_v1" test_print_tool_overview_yarn_v1 || true
 run_test "print_tool_overview_yarn_berry" test_print_tool_overview_yarn_berry || true
-run_test "main_output_includes_tool_overview" test_main_output_includes_tool_overview || true
+run_test "preflight_npm_version_failure" test_preflight_npm_version_failure || true
+run_test "preflight_pnpm_base_version_failure" test_preflight_pnpm_base_version_failure || true
+run_test "preflight_pnpm_pattern_exception_version_failure" test_preflight_pnpm_pattern_exception_version_failure || true
+run_test "preflight_pnpm_version_selector_failure" test_preflight_pnpm_version_selector_failure || true
+run_test "preflight_yarn_berry_exception_requires_yarn2" test_preflight_yarn_berry_exception_requires_yarn2 || true
+run_test "main_output_includes_preflight_and_configuration" test_main_output_includes_preflight_and_configuration || true
 run_test "main_remove_output_includes_tool_overview" test_main_remove_output_includes_tool_overview || true
+run_test "main_scoped_remove_output_includes_tool_overview" test_main_scoped_remove_output_includes_tool_overview || true
+run_test "scoped_remove_only_pip" test_scoped_remove_only_pip || true
+run_test "scoped_remove_only_uv" test_scoped_remove_only_uv || true
+run_test "scoped_remove_only_uv_cron" test_scoped_remove_only_uv_cron || true
+run_test "scoped_remove_uv_and_uv_cron" test_scoped_remove_uv_and_uv_cron || true
+run_test "scoped_remove_only_yarn_berry" test_scoped_remove_only_yarn_berry || true
 
 finish_tests
