@@ -366,20 +366,69 @@ test_validate_configs_yarn_berry() {
     cleanup_test_env
 }
 
-test_main_modes() {
+test_print_tool_overview_yarn_v1() {
+    setup_test_env
+    load_common_library
+    install_fake_detection_tools "1.22.22"
+
+    local output expected_yarn_path
+    expected_yarn_path="$TEST_BIN_DIR/yarn"
+    output=$(print_tool_overview)
+
+    assert_contains "$output" "Tool overview"
+    assert_contains "$output" "pip              yes"
+    assert_contains "$output" "$TEST_BIN_DIR/pip3"
+    assert_contains "$output" "bun              no         not found"
+    assert_contains "$output" "yarn v1          yes        $expected_yarn_path"
+    assert_contains "$output" "yarn v2+         no         $expected_yarn_path"
+    cleanup_test_env
+}
+
+test_print_tool_overview_yarn_berry() {
+    setup_test_env
+    load_common_library
+    install_fake_detection_tools "4.7.0"
+
+    local output expected_yarn_path
+    expected_yarn_path="$TEST_BIN_DIR/yarn"
+    output=$(print_tool_overview)
+
+    assert_contains "$output" "yarn v1          no         $expected_yarn_path"
+    assert_contains "$output" "yarn v2+         yes        $expected_yarn_path"
+    cleanup_test_env
+}
+
+test_main_output_includes_tool_overview() {
     setup_test_env
     install_fake_crontab
-    install_fake_validation_tools "1.22.22"
+    install_fake_detection_tools "1.22.22"
     load_common_library
 
     local output
     output=$(main 4 --uv-exception "setuptools=false" --pnpm-exception webpack --bun-exception typescript --yarn-exception "@myorg/*")
+
     assert_contains "$output" "minimum age: 4 days"
+    assert_contains "$output" "Tool overview"
+    assert_contains "$output" "$TEST_BIN_DIR/pip3"
+    assert_contains "$output" "bun              no         not found"
+    assert_before "$output" "Tool overview" "Configuration"
     assert_contains "$output" "updated"
     assert_contains "$output" "validated"
+    cleanup_test_env
+}
 
+test_main_remove_output_includes_tool_overview() {
+    setup_test_env
+    install_fake_crontab
+    install_fake_detection_tools "1.22.22"
+    load_common_library
+
+    local output
     output=$(main --remove)
+
     assert_contains "$output" "REMOVE MODE"
+    assert_contains "$output" "Tool overview"
+    assert_before "$output" "Tool overview" "Removing settings"
     assert_contains "$output" "removed"
     cleanup_test_env
 }
@@ -399,6 +448,9 @@ run_test "setup_remove_yarn_classic" test_setup_remove_yarn_classic || true
 run_test "setup_remove_yarn_berry" test_setup_remove_yarn_berry || true
 run_test "validate_configs" test_validate_configs || true
 run_test "validate_configs_yarn_berry" test_validate_configs_yarn_berry || true
-run_test "main_modes" test_main_modes || true
+run_test "print_tool_overview_yarn_v1" test_print_tool_overview_yarn_v1 || true
+run_test "print_tool_overview_yarn_berry" test_print_tool_overview_yarn_berry || true
+run_test "main_output_includes_tool_overview" test_main_output_includes_tool_overview || true
+run_test "main_remove_output_includes_tool_overview" test_main_remove_output_includes_tool_overview || true
 
 finish_tests

@@ -47,6 +47,16 @@ assert_contains() {
     [[ "$haystack" == *"$needle"* ]] || fail "expected output to contain [$needle], got: $haystack"
 }
 
+assert_before() {
+    local haystack="$1"
+    local first="$2"
+    local second="$3"
+
+    [[ "$haystack" == *"$first"* ]] || fail "expected output to contain [$first]"
+    [[ "$haystack" == *"$second"* ]] || fail "expected output to contain [$second]"
+    [[ "${haystack#*"$first"}" == *"$second"* ]] || fail "expected [$first] to appear before [$second]"
+}
+
 assert_file_contains() {
     local file="$1"
     local needle="$2"
@@ -172,8 +182,64 @@ EOF
     chmod +x "$TEST_BIN_DIR/date"
 }
 
+install_fake_detection_tools() {
+    local yarn_version="${1:-1.22.22}"
+    local include_bun="${2:-0}"
+
+    cat > "$TEST_BIN_DIR/pip3" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'pip3 test binary\n'
+EOF
+
+    cat > "$TEST_BIN_DIR/uv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'uv test binary\n'
+EOF
+
+    cat > "$TEST_BIN_DIR/npm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'npm test binary\n'
+EOF
+
+    cat > "$TEST_BIN_DIR/pnpm" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'pnpm test binary\n'
+EOF
+
+    cat > "$TEST_BIN_DIR/yarn" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf '%s\n' "$yarn_version"
+    exit 0
+fi
+
+printf 'yarn test binary\n'
+EOF
+
+    chmod +x "$TEST_BIN_DIR/pip3" "$TEST_BIN_DIR/uv" "$TEST_BIN_DIR/npm" "$TEST_BIN_DIR/pnpm" "$TEST_BIN_DIR/yarn"
+
+    if [[ "$include_bun" == "1" ]]; then
+        cat > "$TEST_BIN_DIR/bun" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'bun test binary\n'
+EOF
+        chmod +x "$TEST_BIN_DIR/bun"
+    else
+        rm -f "$TEST_BIN_DIR/bun"
+    fi
+}
+
 install_fake_validation_tools() {
     local yarn_version="${1:-1.22.22}"
+
+    install_fake_detection_tools "$yarn_version" 1
 
     cat > "$TEST_BIN_DIR/pip3" <<'EOF'
 #!/usr/bin/env bash
