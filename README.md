@@ -1,80 +1,123 @@
 # Set Minimum Package Release Age
 
-Bash scripts that configure a minimum package release age across Python and JavaScript package managers. The default is 7 days, configurable via a CLI argument. This helps protect against supply chain attacks by ensuring you only install packages that have been published for at least the configured period.
+Bash scripts that configure a minimum package release age across Python and JavaScript package managers. The default is 7 days, configurable via CLI argument. This helps reduce supply-chain risk by preferring package versions that have been published long enough to be noticed and pulled if they are malicious.
 
-Separate scripts are provided for macOS and Linux to handle platform-specific config paths and `sed` syntax differences.
+The repo now uses a shared core library plus thin platform wrappers:
+
+- `set_package_min_age_linux.sh`
+- `set_package_min_age_macos.sh`
+- `lib/set_package_min_age_common.sh`
 
 ## Supported Package Managers
 
-### Python
-- **pip** — sets `min-age` in `~/.config/pip/pip.conf`
-- **uv** — sets `exclude-newer` in `~/.config/uv/uv.toml` (uses an absolute date; re-run periodically to keep current)
+| Ecosystem | Tool | Mode | Config |
+|---|---|---|---|
+| Python | `pip` | native age gate | `~/.config/pip/pip.conf` |
+| Python | `uv` | native age gate + per-package exceptions | `~/.config/uv/uv.toml` |
+| JavaScript | `npm` | native age gate | `~/.npmrc` |
+| JavaScript | `pnpm` | native age gate + selectors to exclude | `~/.config/pnpm/rc` (Linux) / `~/Library/Preferences/pnpm/rc` (macOS) |
+| JavaScript | `bun` | native age gate + package excludes | `~/.bunfig.toml` |
+| JavaScript | `yarn classic (v1)` | cache TTL workaround, not a true publish-age gate | `~/.yarnrc` |
+| JavaScript | `yarn berry (v2+)` | native age gate + preapproved package patterns | `~/.yarnrc.yml` |
 
-### JavaScript
-- **npm** — sets `min-release-age` in `~/.npmrc`
-- **pnpm** — sets `minimum-release-age` in the platform-specific pnpm rc file
-- **bun** — sets `minimumReleaseAge` in `~/.bunfig.toml`
-- **yarn classic (v1)** — sets `cache-min` in `~/.yarnrc`
-- **yarn berry (v2+)** — adds an advisory comment to `~/.yarnrc.yml` (no built-in setting available)
+## Version Notes
+
+- `npm` age gating requires npm `11.10.0+`.
+- `pnpm` `minimumReleaseAge` requires pnpm `10.16.0+`.
+- `pnpm` exclusion patterns require pnpm `10.17.0+`.
+- `pnpm` version-selector exclusions require pnpm `10.19.0+`.
+- Yarn Berry support uses `npmMinimalAgeGate` and `npmPreapprovedPackages` from current Yarn docs.
+- Yarn Classic only supports `cache-min`, which is a cache freshness workaround rather than native publish-date filtering.
 
 ## Usage
 
 ### macOS
 
 ```bash
-bash set_package_min_age_macos.sh          # default: 7 days
-bash set_package_min_age_macos.sh 14       # custom: 14 days
-bash set_package_min_age_macos.sh 1d       # custom: 1 day
-bash set_package_min_age_macos.sh --remove # remove all settings
-bash set_package_min_age_macos.sh --help   # show usage
+bash set_package_min_age_macos.sh
+bash set_package_min_age_macos.sh 14
+bash set_package_min_age_macos.sh 1d
+bash set_package_min_age_macos.sh --uv-exception "setuptools=false"
+bash set_package_min_age_macos.sh --pnpm-exception webpack --bun-exception typescript
+bash set_package_min_age_macos.sh --yarn-exception "@myorg/*"
+bash set_package_min_age_macos.sh --remove
+bash set_package_min_age_macos.sh --help
 ```
 
 ### Linux
 
 ```bash
-bash set_package_min_age_linux.sh          # default: 7 days
-bash set_package_min_age_linux.sh 14       # custom: 14 days
-bash set_package_min_age_linux.sh 1d       # custom: 1 day
-bash set_package_min_age_linux.sh --remove # remove all settings
-bash set_package_min_age_linux.sh --help   # show usage
+bash set_package_min_age_linux.sh
+bash set_package_min_age_linux.sh 14
+bash set_package_min_age_linux.sh 1d
+bash set_package_min_age_linux.sh --uv-exception "setuptools=false"
+bash set_package_min_age_linux.sh --pnpm-exception webpack --bun-exception typescript
+bash set_package_min_age_linux.sh --yarn-exception "@myorg/*"
+bash set_package_min_age_linux.sh --remove
+bash set_package_min_age_linux.sh --help
 ```
 
-Both scripts are idempotent and safe to run multiple times:
+### Exception Flags
 
-- If a setting is **already correctly configured**, it is skipped entirely (no file modification)
-- If a setting exists with a **different value**, the current value is shown and updated
-- If a setting is **missing**, it is added
-- The `--remove` flag reverts all settings using the same backup and verification mechanism, and is also idempotent
+- `--uv-exception RULE`
+  - format: `package=false` or `package=<duration-or-rfc3339>`
+- `--pnpm-exception SELECTOR`
+  - package name, glob, or supported version selector
+- `--bun-exception PACKAGE`
+  - package name to bypass the age gate
+- `--yarn-exception PATTERN`
+  - pattern added to Yarn Berry `npmPreapprovedPackages`
 
-## What It Does
+Examples:
 
-For each supported package manager, the script:
+```bash
+bash set_package_min_age_linux.sh 7 \
+  --uv-exception "setuptools=false" \
+  --pnpm-exception "@myorg/*" \
+  --bun-exception typescript \
+  --yarn-exception "@myorg/*"
+```
 
-1. Checks if the setting is already correctly configured — skips if so
-2. Backs up the existing config file before making any changes
-3. Adds or updates the minimum release age setting (default 7 days, configurable via CLI argument) converting to the unit each tool expects
-4. Diffs the modified file against the backup to verify only expected lines changed
-5. If unexpected changes are detected, automatically **rolls back** to the backup
-6. Prints a summary showing which tools were skipped, updated, or rolled back
+## What The Scripts Do
 
-## Platform Differences
+For each supported tool, the script:
 
-| | macOS | Linux |
-|---|---|---|
-| `sed` in-place flag | `sed -i ''` | `sed -i` |
-| pnpm config path | `~/Library/Preferences/pnpm/rc` | `~/.config/pnpm/rc` |
+1. Checks whether the target setting is already correct.
+2. Backs up the existing config before modifying it.
+3. Adds or updates the age-gate setting using the unit each tool expects.
+4. Adds native exception settings where that package manager supports them.
+5. Validates every supported tool by checking the config written for that tool.
+6. Diffs the modified file against the backup and rolls back unexpected changes.
+7. Prints a summary of updated, skipped, failed, and validated tools.
 
-## Config Files Modified
+`uv` is still written with an absolute `exclude-newer` timestamp, so the scripts also manage a daily cron job that refreshes the date.
 
-| Tool | Config File |
-|------|------------|
-| pip | `~/.config/pip/pip.conf` |
-| uv | `~/.config/uv/uv.toml` |
-| npm | `~/.npmrc` |
-| pnpm | `~/.config/pnpm/rc` (Linux) or `~/Library/Preferences/pnpm/rc` (macOS) |
-| bun | `~/.bunfig.toml` |
-| yarn v1 | `~/.yarnrc` |
-| yarn v2+ | `~/.yarnrc.yml` |
+## Idempotence
+
+Both scripts are safe to run repeatedly:
+
+- If a setting is already correct, it is skipped.
+- If a setting exists with a different value, it is updated.
+- If a setting is missing, it is added.
+- `--remove` is also idempotent and removes managed age-gate settings on repeated runs.
+
+## Testing
+
+Syntax checks:
+
+```bash
+bash -n lib/set_package_min_age_common.sh
+bash -n set_package_min_age_linux.sh
+bash -n set_package_min_age_macos.sh
+```
+
+Run the full pure-Bash test suite:
+
+```bash
+bash tests/run.sh
+```
+
+The test suite covers shared functions directly and also runs both platform wrappers end-to-end with fake package-manager and `crontab` binaries.
 
 ## License
 
