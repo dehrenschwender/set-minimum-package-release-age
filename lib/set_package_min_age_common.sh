@@ -17,6 +17,12 @@ PNPM_EXCEPTIONS=()
 BUN_EXCEPTIONS=()
 YARN_EXCEPTIONS=()
 TOOL_DETECTION_CACHE=""
+NORMAL_MODE_REPORTING=false
+RESULT_TOOL_KEYS=()
+RESULT_CONFIG_STATUSES=()
+RESULT_CONFIG_DETAILS=()
+RESULT_VALIDATION_STATUSES=()
+RESULT_VALIDATION_DETAILS=()
 FAILED_TOOLS=()
 SKIPPED_TOOLS=()
 UPDATED_TOOLS=()
@@ -245,6 +251,14 @@ parse_args() {
     BACKUP_SUFFIX=".bak.$(date +%Y%m%d%H%M%S)"
 }
 
+TABLE_SEPARATOR_WIDTH=90
+
+print_separator() {
+    local dashes
+    printf -v dashes '%*s' "$TABLE_SEPARATOR_WIDTH" ''
+    echo "  ${dashes// /-}"
+}
+
 print_status() {
     printf "  %-16s %-10s %s\n" "$1" "$2" "$3"
 }
@@ -254,7 +268,148 @@ print_overview_status() {
 }
 
 print_readiness_status() {
-    printf "  %-16s %-10s %-12s %-10s %s\n" "$1" "$2" "$3" "$4" "$5"
+    printf "  %-16s %-10s %-12s %-32s %-10s %s\n" "$1" "$2" "$3" "$4" "$5" "$6"
+}
+
+print_results_status() {
+    printf "  %-16s %-10s %-12s %s\n" "$1" "$2" "$3" "$4"
+}
+
+result_tool_display_name() {
+    case "$1" in
+        pip) printf '%s\n' "pip" ;;
+        uv) printf '%s\n' "uv" ;;
+        uv-cron) printf '%s\n' "uv cron" ;;
+        npm) printf '%s\n' "npm" ;;
+        pnpm) printf '%s\n' "pnpm" ;;
+        bun) printf '%s\n' "bun" ;;
+        yarn-classic) printf '%s\n' "yarn v1" ;;
+        yarn-berry) printf '%s\n' "yarn v2+" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
+}
+
+init_results_table() {
+    RESULT_TOOL_KEYS=(pip uv uv-cron npm pnpm bun yarn-classic yarn-berry)
+    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- --)
+    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "")
+    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- --)
+    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "")
+}
+
+result_row_index() {
+    case "$1" in
+        pip) printf '%s\n' 0 ;;
+        uv) printf '%s\n' 1 ;;
+        uv-cron) printf '%s\n' 2 ;;
+        npm) printf '%s\n' 3 ;;
+        pnpm) printf '%s\n' 4 ;;
+        bun) printf '%s\n' 5 ;;
+        yarn-classic) printf '%s\n' 6 ;;
+        yarn-berry) printf '%s\n' 7 ;;
+        *) return 1 ;;
+    esac
+}
+
+record_result_config() {
+    local tool_key="$1"
+    local status="$2"
+    local detail="$3"
+    local idx
+
+    idx=$(result_row_index "$tool_key") || return 1
+    RESULT_CONFIG_STATUSES[$idx]="$status"
+    RESULT_CONFIG_DETAILS[$idx]="$detail"
+}
+
+record_result_validation() {
+    local tool_key="$1"
+    local status="$2"
+    local detail="$3"
+    local idx
+
+    idx=$(result_row_index "$tool_key") || return 1
+    RESULT_VALIDATION_STATUSES[$idx]="$status"
+    RESULT_VALIDATION_DETAILS[$idx]="$detail"
+}
+
+emit_config_status() {
+    local tool_display="$1"
+    local tool_key="$2"
+    local status="$3"
+    local detail="$4"
+
+    if [[ "$NORMAL_MODE_REPORTING" == true ]]; then
+        record_result_config "$tool_key" "$status" "$detail"
+        return 0
+    fi
+
+    print_status "$tool_display" "$status" "$detail"
+}
+
+emit_validation_status() {
+    local tool_display="$1"
+    local tool_key="$2"
+    local status="$3"
+    local detail="$4"
+
+    if [[ "$NORMAL_MODE_REPORTING" == true ]]; then
+        record_result_validation "$tool_key" "$status" "$detail"
+        return 0
+    fi
+
+    print_status "$tool_display" "$status" "$detail"
+}
+
+print_results_table() {
+    local idx tool_key tool_display config_status config_detail validation_status validation_detail detail
+
+    echo "  Results"
+    print_separator
+    print_results_status "TOOL" "CONFIG" "VALIDATION" "DETAIL"
+    print_separator
+
+    for idx in "${!RESULT_TOOL_KEYS[@]}"; do
+        tool_key="${RESULT_TOOL_KEYS[$idx]}"
+        tool_display=$(result_tool_display_name "$tool_key")
+        config_status="${RESULT_CONFIG_STATUSES[$idx]}"
+        config_detail="${RESULT_CONFIG_DETAILS[$idx]}"
+        validation_status="${RESULT_VALIDATION_STATUSES[$idx]}"
+        validation_detail="${RESULT_VALIDATION_DETAILS[$idx]}"
+
+        detail="$config_detail"
+        if [[ -n "$validation_detail" ]]; then
+            if [[ -n "$detail" ]]; then
+                detail+=" | "
+            fi
+            detail+="$validation_detail"
+        fi
+
+        print_results_status "$tool_display" "$config_status" "$validation_status" "$detail"
+    done
+
+    echo ""
+}
+
+pip_cutoff_timestamp() {
+    date_days_ago_rfc3339 "$MIN_AGE_DAYS"
+}
+
+pip_detail_text() {
+    local timestamp="$1"
+    printf 'uploaded-prior-to = %s (%sd window)' "$timestamp" "$MIN_AGE_DAYS"
+}
+
+exception_count_suffix() {
+    local count="$1"
+    local label="$2"
+
+    if [[ "$count" -gt 0 ]]; then
+        printf '; %s=%s' "$label" "$count"
+        return
+    fi
+
+    printf ''
 }
 
 resolve_tool_path_with_which() {
@@ -450,25 +605,28 @@ record_preflight_ok() {
     local tool="$1"
     local installed="$2"
     local version="$3"
-    local detail="$4"
-    print_readiness_status "$tool" "$installed" "$version" "ok" "$detail"
+    local path="$4"
+    local detail="$5"
+    print_readiness_status "$tool" "$installed" "$version" "$path" "ok" "$detail"
 }
 
 record_preflight_skip() {
     local tool="$1"
     local installed="$2"
     local version="$3"
-    local detail="$4"
-    print_readiness_status "$tool" "$installed" "$version" "--" "$detail"
+    local path="$4"
+    local detail="$5"
+    print_readiness_status "$tool" "$installed" "$version" "$path" "--" "$detail"
 }
 
 record_preflight_fail() {
     local tool="$1"
     local installed="$2"
     local version="$3"
-    local detail="$4"
-    local tool_key="${5:-$tool}"
-    print_readiness_status "$tool" "$installed" "$version" "FAIL" "$detail"
+    local path="$4"
+    local detail="$5"
+    local tool_key="${6:-$tool}"
+    print_readiness_status "$tool" "$installed" "$version" "$path" "FAIL" "$detail"
     PREFLIGHT_FAILED_TOOLS+=("$tool_key")
 }
 
@@ -477,37 +635,38 @@ ensure_tool_version() {
     local required="$2"
     local feature="$3"
     local fail_key="${4:-$tool}"
-    local installed version
+    local installed version path
 
     installed=$(lookup_detected_tool_field "$tool" installed)
     version=$(lookup_detected_tool_field "$tool" version)
+    path=$(lookup_detected_tool_field "$tool" path)
 
     if [[ "$installed" != "yes" ]]; then
-        record_preflight_skip "$tool" "$installed" "$version" "$feature skipped; tool not installed"
+        record_preflight_skip "$tool" "$installed" "$version" "$path" "$feature skipped; tool not installed"
         return 0
     fi
 
     if [[ -z "$version" || "$version" == "unknown" ]]; then
-        record_preflight_fail "$tool" "$installed" "$version" "$feature requires version detection; installed version could not be determined" "$fail_key"
+        record_preflight_fail "$tool" "$installed" "$version" "$path" "$feature requires version detection; installed version could not be determined" "$fail_key"
         return 1
     fi
 
     if version_gte "$version" "$required"; then
-        record_preflight_ok "$tool" "$installed" "$version" "$feature requires >= $required"
+        record_preflight_ok "$tool" "$installed" "$version" "$path" "$feature requires >= $required"
         return 0
     fi
 
-    record_preflight_fail "$tool" "$installed" "$version" "$feature requires >= $required" "$fail_key"
+    record_preflight_fail "$tool" "$installed" "$version" "$path" "$feature requires >= $required" "$fail_key"
     return 1
 }
 
 print_tool_overview() {
     local tool installed path version
 
-    echo "  Tool overview"
-    echo "  ----------------------------------------------------------"
+    echo "  Tool readiness"
+    print_separator
     print_overview_status "TOOL" "INSTALLED" "VERSION" "PATH"
-    echo "  ----------------------------------------------------------"
+    print_separator
 
     while IFS='|' read -r tool installed path version; do
         print_overview_status "$tool" "$installed" "$version" "$path"
@@ -777,7 +936,7 @@ record_validation_ok() {
     local tool_display="$1"
     local detail="$2"
     local tool_key="${3:-$tool_display}"
-    print_status "$tool_display" "ok" "$detail"
+    emit_validation_status "$tool_display" "$tool_key" "ok" "$detail"
     VALIDATED_TOOLS+=("$tool_key")
 }
 
@@ -785,8 +944,15 @@ record_validation_fail() {
     local tool_display="$1"
     local detail="$2"
     local tool_key="${3:-$tool_display}"
-    print_status "$tool_display" "FAIL" "$detail"
+    emit_validation_status "$tool_display" "$tool_key" "FAIL" "$detail"
     VALIDATION_FAILED_TOOLS+=("$tool_key")
+}
+
+record_validation_skip() {
+    local tool_display="$1"
+    local detail="$2"
+    local tool_key="${3:-$tool_display}"
+    emit_validation_status "$tool_display" "$tool_key" "--" "$detail"
 }
 
 date_days_ago_rfc3339() {
@@ -802,24 +968,19 @@ run_preflight_checks() {
     local required_pnpm_version="10.16.0"
     local pnpm_feature="minimum-release-age"
     local selector
-    local installed version yarn_v1_installed yarn_v2_installed yarn_version
+    local installed version path
 
     PREFLIGHT_FAILED_TOOLS=()
 
-    installed=$(lookup_detected_tool_field "pip" installed)
-    version=$(lookup_detected_tool_field "pip" version)
-    if [[ "$installed" == "yes" ]]; then
-        record_preflight_ok "pip" "$installed" "$version" "no runtime gate"
-    else
-        record_preflight_skip "pip" "$installed" "$version" "not installed; config can still be written"
-    fi
+    ensure_tool_version "pip" "26.0" "uploaded-prior-to" || status=1
 
     installed=$(lookup_detected_tool_field "uv" installed)
     version=$(lookup_detected_tool_field "uv" version)
+    path=$(lookup_detected_tool_field "uv" path)
     if [[ "$installed" == "yes" ]]; then
-        record_preflight_ok "uv" "$installed" "$version" "no runtime gate"
+        record_preflight_ok "uv" "$installed" "$version" "$path" "exclude-newer supported; no documented minimum version"
     else
-        record_preflight_skip "uv" "$installed" "$version" "not installed; config can still be written"
+        record_preflight_skip "uv" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
 
     ensure_tool_version "npm" "11.10.0" "min-release-age" || status=1
@@ -840,42 +1001,37 @@ run_preflight_checks() {
 
     installed=$(lookup_detected_tool_field "bun" installed)
     version=$(lookup_detected_tool_field "bun" version)
+    path=$(lookup_detected_tool_field "bun" path)
     if [[ "$installed" == "yes" ]]; then
-        record_preflight_ok "bun" "$installed" "$version" "no runtime gate"
+        record_preflight_ok "bun" "$installed" "$version" "$path" "minimumReleaseAge supported; no documented minimum version"
     else
-        record_preflight_skip "bun" "$installed" "$version" "not installed; config can still be written"
+        record_preflight_skip "bun" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
 
     installed=$(lookup_detected_tool_field "yarn v1" installed)
     version=$(lookup_detected_tool_field "yarn v1" version)
+    path=$(lookup_detected_tool_field "yarn v1" path)
     if [[ "$installed" == "yes" ]]; then
-        record_preflight_ok "yarn v1" "$installed" "$version" "cache-min workaround; no runtime gate"
+        record_preflight_ok "yarn v1" "$installed" "$version" "$path" "cache-min workaround; no native age gate"
     else
-        record_preflight_skip "yarn v1" "$installed" "$version" "not installed"
+        record_preflight_skip "yarn v1" "$installed" "$version" "$path" "not installed"
     fi
 
-    if [[ ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
-        yarn_v1_installed=$(lookup_detected_tool_field "yarn v1" installed)
-        yarn_v2_installed=$(lookup_detected_tool_field "yarn v2+" installed)
-        yarn_version=$(lookup_detected_tool_field "yarn v2+" version)
-        version="$yarn_version"
-
-        if [[ "$yarn_v2_installed" == "yes" ]]; then
-            record_preflight_ok "yarn v2+" "$yarn_v2_installed" "$version" "native exceptions supported"
-        elif [[ "$yarn_v1_installed" == "yes" ]]; then
-            record_preflight_fail "yarn v2+" "$yarn_v2_installed" "$version" "yarn-berry exceptions require Yarn >= 2" "yarn-berry"
+    installed=$(lookup_detected_tool_field "yarn v2+" installed)
+    version=$(lookup_detected_tool_field "yarn v2+" version)
+    path=$(lookup_detected_tool_field "yarn v2+" path)
+    if [[ "$installed" == "yes" ]]; then
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_fail "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires version detection; installed version could not be determined" "yarn-berry"
             status=1
+        elif version_gte "$version" "4.10.0"; then
+            record_preflight_ok "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.10.0"
         else
-            record_preflight_skip "yarn v2+" "$yarn_v2_installed" "$version" "native exceptions requested; tool not installed"
+            record_preflight_fail "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.10.0" "yarn-berry"
+            status=1
         fi
     else
-        installed=$(lookup_detected_tool_field "yarn v2+" installed)
-        version=$(lookup_detected_tool_field "yarn v2+" version)
-        if [[ "$installed" == "yes" ]]; then
-            record_preflight_ok "yarn v2+" "$installed" "$version" "no runtime gate"
-        else
-            record_preflight_skip "yarn v2+" "$installed" "$version" "not installed; config may still be written"
-        fi
+        record_preflight_skip "yarn v2+" "$installed" "$version" "$path" "not installed; config may still be written"
     fi
 
     return "$status"
@@ -900,7 +1056,7 @@ run_remove_tools() {
 
 print_config_files() {
     echo "  Config files"
-    echo "  ----------------------------------------------------------"
+    print_separator
     echo "  pip            $(tool_config_path pip)"
     echo "  uv             $(tool_config_path uv)"
     echo "  npm            $(tool_config_path npm)"
@@ -914,12 +1070,17 @@ print_config_files() {
 setup_pip() {
     local pip_conf_dir="$HOME/.config/pip"
     local pip_conf="$pip_conf_dir/pip.conf"
-    local desired_line="min-age = ${MIN_AGE_DAYS}d"
+    local cutoff_timestamp desired_line detail status current current_cutoff
+
+    cutoff_timestamp=$(pip_cutoff_timestamp)
+    desired_line="uploaded-prior-to = ${cutoff_timestamp}"
+    detail=$(pip_detail_text "$cutoff_timestamp")
 
     mkdir -p "$pip_conf_dir"
 
-    if grep -q "^${desired_line}$" "$pip_conf" 2>/dev/null; then
-        print_status "pip" "ok" "$desired_line"
+    if grep -q "^${desired_line}$" "$pip_conf" 2>/dev/null \
+        && ! grep -q '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" 2>/dev/null; then
+        emit_config_status "pip" "pip" "ok" "$detail"
         SKIPPED_TOOLS+=("pip")
         return 0
     fi
@@ -927,27 +1088,34 @@ setup_pip() {
     backup_if_exists "$pip_conf"
     ensure_file_exists "$pip_conf"
 
-    if grep -q '^\[global\]' "$pip_conf" 2>/dev/null; then
-        if grep -q '^[[:space:]]*min-age' "$pip_conf" 2>/dev/null; then
-            local current
-            current=$(grep '^[[:space:]]*min-age' "$pip_conf" | head -1 | sed 's/.*= *//')
-            print_status "pip" "updated" "$current --> ${MIN_AGE_DAYS}d"
-        else
-            print_status "pip" "added" "$desired_line"
-        fi
-        upsert_line_in_section "$pip_conf" "[global]" '^[[:space:]]*min-age[[:space:]]*=' "$desired_line"
-    else
-        print_status "pip" "added" "$desired_line (new [global] section)"
-        printf '\n[global]\n%s\n' "$desired_line" >> "$pip_conf"
+    status="added"
+    if grep -q '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" 2>/dev/null; then
+        current_cutoff=$(grep '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" | head -1 | sed 's/.*= *//')
+        status="updated"
+        detail="${current_cutoff} --> ${detail}"
+    elif grep -q '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" 2>/dev/null; then
+        current=$(grep '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" | head -1 | sed 's/.*= *//')
+        status="updated"
+        detail="min-age = ${current} --> ${detail}"
     fi
 
-    verify_and_finalize "$pip_conf" "pip" 'min-age\|\[global\]' || true
+    upsert_line_in_section "$pip_conf" "[install]" '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$desired_line"
+    remove_matching_lines "$pip_conf" '^[[:space:]]*min-age[[:space:]]*='
+    if grep -q '^\[global\]' "$pip_conf" 2>/dev/null && ! section_has_content "$pip_conf" "[global]"; then
+        remove_matching_lines "$pip_conf" '^\\[global\\]$'
+    fi
+
+    if verify_and_finalize "$pip_conf" "pip" 'uploaded-prior-to\|min-age\|\[install\]\|\[global\]'; then
+        emit_config_status "pip" "pip" "$status" "$detail"
+    else
+        emit_config_status "pip" "pip" "FAIL" "$detail"
+    fi
 }
 
 setup_uv() {
     local uv_conf_dir="$HOME/.config/uv"
     local uv_conf="$uv_conf_dir/uv.toml"
-    local exclude_newer_date desired_exception_line current_exceptions desired_exceptions
+    local exclude_newer_date desired_exception_line current_exceptions desired_exceptions detail status current
 
     exclude_newer_date=$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")
     desired_exceptions=""
@@ -961,35 +1129,34 @@ setup_uv() {
     current_exceptions=$(current_lines_or_empty "$uv_conf" '^exclude-newer-package[[:space:]]*=')
     if grep -q "^exclude-newer = \"${exclude_newer_date}\"$" "$uv_conf" 2>/dev/null \
         && [[ "$current_exceptions" == "$desired_exceptions" ]]; then
-        print_status "uv" "ok" "exclude-newer = \"${exclude_newer_date}\""
+        emit_config_status "uv" "uv" "ok" "exclude-newer = \"${exclude_newer_date}\"$(exception_count_suffix "${#UV_EXCEPTIONS[@]}" "exceptions")"
         SKIPPED_TOOLS+=("uv")
         return 0
     fi
 
     backup_if_exists "$uv_conf"
 
+    status="added"
+    detail="exclude-newer = \"${exclude_newer_date}\"$(exception_count_suffix "${#UV_EXCEPTIONS[@]}" "exceptions")"
     if grep -q '^exclude-newer[[:space:]]*=' "$uv_conf" 2>/dev/null; then
-        local current
         current=$(grep '^exclude-newer[[:space:]]*=' "$uv_conf" | head -1 | sed 's/.*= *//')
-        print_status "uv" "updated" "$current --> \"${exclude_newer_date}\""
-    else
-        print_status "uv" "added" "exclude-newer = \"${exclude_newer_date}\""
+        status="updated"
+        detail="${current} --> ${detail}"
     fi
     replace_or_append_line "$uv_conf" '^exclude-newer[[:space:]]*=' "exclude-newer = \"${exclude_newer_date}\""
 
     if [[ ${#UV_EXCEPTIONS[@]} -gt 0 ]]; then
         desired_exception_line=$(build_uv_exception_line)
-        if grep -q '^exclude-newer-package[[:space:]]*=' "$uv_conf" 2>/dev/null; then
-            print_status "uv exceptions" "updated" "$desired_exception_line"
-        else
-            print_status "uv exceptions" "added" "$desired_exception_line"
-        fi
         replace_or_append_line "$uv_conf" '^exclude-newer-package[[:space:]]*=' "$desired_exception_line"
     else
         remove_matching_lines "$uv_conf" '^exclude-newer-package[[:space:]]*='
     fi
 
-    verify_and_finalize "$uv_conf" "uv" 'exclude-newer' || true
+    if verify_and_finalize "$uv_conf" "uv" 'exclude-newer'; then
+        emit_config_status "uv" "uv" "$status" "$detail"
+    else
+        emit_config_status "uv" "uv" "FAIL" "$detail"
+    fi
 }
 
 CRON_MARKER="# set-minimum-package-release-age: uv exclude-newer"
@@ -999,7 +1166,7 @@ setup_cron_uv() {
     local min_age="${MIN_AGE_DAYS}"
 
     if crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
-        print_status "uv cron" "ok" "daily job installed"
+        emit_config_status "uv cron" "uv-cron" "ok" "daily job installed"
         SKIPPED_TOOLS+=("cron-uv")
         return 0
     fi
@@ -1010,10 +1177,10 @@ setup_cron_uv() {
     ( crontab -l 2>/dev/null || true; echo "$cron_cmd" ) | crontab -
 
     if crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
-        print_status "uv cron" "added" "daily at midnight (crontab -l to verify)"
+        emit_config_status "uv cron" "uv-cron" "added" "daily at midnight (crontab -l to verify)"
         UPDATED_TOOLS+=("cron-uv")
     else
-        print_status "uv cron" "FAIL" "could not install cron job"
+        emit_config_status "uv cron" "uv-cron" "FAIL" "could not install cron job"
         FAILED_TOOLS+=("cron-uv")
     fi
 }
@@ -1021,33 +1188,38 @@ setup_cron_uv() {
 setup_npm() {
     local npmrc="$HOME/.npmrc"
     local desired_line="min-release-age=${MIN_AGE_DAYS}"
+    local detail status current
 
     touch "$npmrc"
 
     if grep -q "^${desired_line}$" "$npmrc" 2>/dev/null; then
-        print_status "npm" "ok" "$desired_line"
+        emit_config_status "npm" "npm" "ok" "$desired_line"
         SKIPPED_TOOLS+=("npm")
         return 0
     fi
 
     backup_if_exists "$npmrc"
 
+    status="added"
+    detail="$desired_line"
     if grep -q '^min-release-age' "$npmrc" 2>/dev/null; then
-        local current
         current=$(grep '^min-release-age' "$npmrc" | head -1 | sed 's/.*=//')
-        print_status "npm" "updated" "$current --> ${MIN_AGE_DAYS}"
-    else
-        print_status "npm" "added" "$desired_line"
+        status="updated"
+        detail="${current} --> ${MIN_AGE_DAYS}"
     fi
 
     replace_or_append_line "$npmrc" '^min-release-age=' "$desired_line"
-    verify_and_finalize "$npmrc" "npm" 'min-release-age' || true
+    if verify_and_finalize "$npmrc" "npm" 'min-release-age'; then
+        emit_config_status "npm" "npm" "$status" "$detail"
+    else
+        emit_config_status "npm" "npm" "FAIL" "$detail"
+    fi
 }
 
 setup_pnpm() {
     local min_age_minutes=$(( MIN_AGE_DAYS * 1440 ))
     local desired_line="minimum-release-age=${min_age_minutes}"
-    local desired_exceptions current_exceptions item
+    local desired_exceptions current_exceptions item detail status current
 
     ensure_file_exists "$PNPM_RC_PATH"
     desired_exceptions=""
@@ -1063,19 +1235,19 @@ setup_pnpm() {
 
     if grep -q "^${desired_line}$" "$PNPM_RC_PATH" 2>/dev/null \
         && [[ "$current_exceptions" == "$desired_exceptions" ]]; then
-        print_status "pnpm" "ok" "$desired_line"
+        emit_config_status "pnpm" "pnpm" "ok" "${desired_line}$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
         SKIPPED_TOOLS+=("pnpm")
         return 0
     fi
 
     backup_if_exists "$PNPM_RC_PATH"
 
+    status="added"
+    detail="${desired_line}$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
     if grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null; then
-        local current
         current=$(grep '^minimum-release-age=' "$PNPM_RC_PATH" | head -1 | sed 's/.*=//')
-        print_status "pnpm" "updated" "$current --> ${min_age_minutes}"
-    else
-        print_status "pnpm" "added" "$desired_line"
+        status="updated"
+        detail="${current} --> ${min_age_minutes}$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
     fi
     replace_or_append_line "$PNPM_RC_PATH" '^minimum-release-age=' "$desired_line"
 
@@ -1084,10 +1256,13 @@ setup_pnpm() {
         for item in "${PNPM_EXCEPTIONS[@]}"; do
             printf 'minimum-release-age-exclude[]=%s\n' "$item" >> "$PNPM_RC_PATH"
         done
-        print_status "pnpm exceptions" "added" "${#PNPM_EXCEPTIONS[@]} selector(s)"
     fi
 
-    verify_and_finalize "$PNPM_RC_PATH" "pnpm" 'minimum-release-age' || true
+    if verify_and_finalize "$PNPM_RC_PATH" "pnpm" 'minimum-release-age'; then
+        emit_config_status "pnpm" "pnpm" "$status" "$detail"
+    else
+        emit_config_status "pnpm" "pnpm" "FAIL" "$detail"
+    fi
 }
 
 setup_bun() {
@@ -1095,6 +1270,7 @@ setup_bun() {
     local min_age_seconds=$(( MIN_AGE_DAYS * 86400 ))
     local desired_age_line="minimumReleaseAge = ${min_age_seconds}"
     local desired_exceptions_line=""
+    local detail status current
 
     touch "$bunfig"
     if [[ ${#BUN_EXCEPTIONS[@]} -gt 0 ]]; then
@@ -1106,58 +1282,66 @@ setup_bun() {
 
     if grep -q "^${desired_age_line}$" "$bunfig" 2>/dev/null \
         && [[ "$current_exceptions" == "$desired_exceptions_line" ]]; then
-        print_status "bun" "ok" "$desired_age_line"
+        emit_config_status "bun" "bun" "ok" "${desired_age_line}$(exception_count_suffix "${#BUN_EXCEPTIONS[@]}" "exceptions")"
         SKIPPED_TOOLS+=("bun")
         return 0
     fi
 
     backup_if_exists "$bunfig"
 
+    status="added"
+    detail="${desired_age_line}$(exception_count_suffix "${#BUN_EXCEPTIONS[@]}" "exceptions")"
     if grep -q '^minimumReleaseAge[[:space:]]*=' "$bunfig" 2>/dev/null; then
-        local current
         current=$(grep '^minimumReleaseAge[[:space:]]*=' "$bunfig" | head -1 | sed 's/.*= *//')
-        print_status "bun" "updated" "$current --> ${min_age_seconds}"
-    else
-        print_status "bun" "added" "$desired_age_line"
+        status="updated"
+        detail="${current} --> ${min_age_seconds}$(exception_count_suffix "${#BUN_EXCEPTIONS[@]}" "exceptions")"
     fi
 
     upsert_line_in_section "$bunfig" "[install]" '^minimumReleaseAge[[:space:]]*=' "$desired_age_line"
 
     if [[ ${#BUN_EXCEPTIONS[@]} -gt 0 ]]; then
         upsert_line_in_section "$bunfig" "[install]" '^minimumReleaseAgeExcludes[[:space:]]*=' "$desired_exceptions_line"
-        print_status "bun exceptions" "added" "${#BUN_EXCEPTIONS[@]} package(s)"
     else
         remove_matching_lines "$bunfig" '^minimumReleaseAgeExcludes[[:space:]]*='
     fi
 
-    verify_and_finalize "$bunfig" "bun" 'minimumReleaseAge\|minimumReleaseAgeExcludes\|\[install\]' || true
+    if verify_and_finalize "$bunfig" "bun" 'minimumReleaseAge\|minimumReleaseAgeExcludes\|\[install\]'; then
+        emit_config_status "bun" "bun" "$status" "$detail"
+    else
+        emit_config_status "bun" "bun" "FAIL" "$detail"
+    fi
 }
 
 setup_yarn_classic() {
     local yarnrc="$HOME/.yarnrc"
     local min_age_seconds=$(( MIN_AGE_DAYS * 86400 ))
     local desired_line="cache-min ${min_age_seconds}"
+    local detail status current
 
     touch "$yarnrc"
 
     if grep -q "^${desired_line}$" "$yarnrc" 2>/dev/null; then
-        print_status "yarn v1" "ok" "$desired_line"
+        emit_config_status "yarn v1" "yarn-classic" "ok" "$desired_line"
         SKIPPED_TOOLS+=("yarn-classic")
         return 0
     fi
 
     backup_if_exists "$yarnrc"
 
+    status="added"
+    detail="$desired_line"
     if grep -q '^cache-min' "$yarnrc" 2>/dev/null; then
-        local current
         current=$(grep '^cache-min' "$yarnrc" | head -1 | awk '{print $2}')
-        print_status "yarn v1" "updated" "$current --> ${min_age_seconds}"
-    else
-        print_status "yarn v1" "added" "$desired_line"
+        status="updated"
+        detail="${current} --> ${min_age_seconds}"
     fi
 
     replace_or_append_line "$yarnrc" '^cache-min ' "$desired_line"
-    verify_and_finalize "$yarnrc" "yarn-classic" 'cache-min' || true
+    if verify_and_finalize "$yarnrc" "yarn-classic" 'cache-min'; then
+        emit_config_status "yarn v1" "yarn-classic" "$status" "$detail"
+    else
+        emit_config_status "yarn v1" "yarn-classic" "FAIL" "$detail"
+    fi
 }
 
 setup_yarn_berry() {
@@ -1165,6 +1349,7 @@ setup_yarn_berry() {
     local desired_gate_line="npmMinimalAgeGate: $(yaml_quote "${MIN_AGE_DAYS}d")"
     local desired_exceptions_line=""
     local current_exceptions
+    local detail status current
 
     touch "$yarnrc_yml"
     if [[ ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
@@ -1174,54 +1359,74 @@ setup_yarn_berry() {
 
     if grep -q "^${desired_gate_line}$" "$yarnrc_yml" 2>/dev/null \
         && [[ "$current_exceptions" == "$desired_exceptions_line" ]]; then
-        print_status "yarn v2+" "ok" "native age gate configured"
+        emit_config_status "yarn v2+" "yarn-berry" "ok" "npmMinimalAgeGate: ${MIN_AGE_DAYS}d$(exception_count_suffix "${#YARN_EXCEPTIONS[@]}" "exceptions")"
         SKIPPED_TOOLS+=("yarn-berry")
         return 0
     fi
 
     backup_if_exists "$yarnrc_yml"
 
+    status="added"
+    detail="npmMinimalAgeGate: ${MIN_AGE_DAYS}d$(exception_count_suffix "${#YARN_EXCEPTIONS[@]}" "exceptions")"
     if grep -q '^npmMinimalAgeGate:' "$yarnrc_yml" 2>/dev/null; then
-        local current
         current=$(grep '^npmMinimalAgeGate:' "$yarnrc_yml" | head -1 | sed 's/^[^:]*: *//')
-        print_status "yarn v2+" "updated" "$current --> ${MIN_AGE_DAYS}d"
-    else
-        print_status "yarn v2+" "added" "native age gate"
+        status="updated"
+        detail="${current} --> ${MIN_AGE_DAYS}d$(exception_count_suffix "${#YARN_EXCEPTIONS[@]}" "exceptions")"
     fi
 
     replace_or_append_line "$yarnrc_yml" '^npmMinimalAgeGate:' "$desired_gate_line"
     if [[ ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
         replace_or_append_line "$yarnrc_yml" '^npmPreapprovedPackages:' "$desired_exceptions_line"
-        print_status "yarn exceptions" "added" "${#YARN_EXCEPTIONS[@]} pattern(s)"
     else
         remove_matching_lines "$yarnrc_yml" '^npmPreapprovedPackages:'
     fi
 
-    verify_and_finalize "$yarnrc_yml" "yarn-berry" 'npmMinimalAgeGate\|npmPreapprovedPackages' || true
+    if verify_and_finalize "$yarnrc_yml" "yarn-berry" 'npmMinimalAgeGate\|npmPreapprovedPackages'; then
+        emit_config_status "yarn v2+" "yarn-berry" "$status" "$detail"
+    else
+        emit_config_status "yarn v2+" "yarn-berry" "FAIL" "$detail"
+    fi
 }
 
 remove_pip() {
     local pip_conf="$HOME/.config/pip/pip.conf"
+    local current detail
+    local cutoff_timestamp
 
-    if ! grep -q '^[[:space:]]*min-age' "$pip_conf" 2>/dev/null; then
-        print_status "pip" "ok" "min-age not present"
+    cutoff_timestamp=$(pip_cutoff_timestamp)
+    detail=$(pip_detail_text "$cutoff_timestamp")
+
+    if ! grep -q '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" 2>/dev/null \
+        && ! grep -q '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" 2>/dev/null; then
+        emit_config_status "pip" "pip" "ok" "uploaded-prior-to not present"
         SKIPPED_TOOLS+=("pip")
         return 0
     fi
 
-    local current
-    current=$(grep '^[[:space:]]*min-age' "$pip_conf" | head -1 | sed 's/.*= *//')
-    print_status "pip" "removed" "min-age = $current"
+    if grep -q '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" 2>/dev/null; then
+        current=$(grep '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" | head -1 | sed 's/.*= *//')
+        detail="uploaded-prior-to = ${current}"
+    elif grep -q '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" 2>/dev/null; then
+        current=$(grep '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" | head -1 | sed 's/.*= *//')
+        detail="min-age = ${current}"
+    fi
 
     backup_if_exists "$pip_conf"
-    remove_matching_lines "$pip_conf" '^[[:space:]]*min-age[[:space:]]*='
+    remove_matching_lines "$pip_conf" '^[[:space:]]*(uploaded-prior-to|min-age)[[:space:]]*='
 
     if grep -q '^\[global\]' "$pip_conf" 2>/dev/null && ! section_has_content "$pip_conf" "[global]"; then
         remove_matching_lines "$pip_conf" '^\\[global\\]$'
     fi
+    if grep -q '^\[install\]' "$pip_conf" 2>/dev/null && ! section_has_content "$pip_conf" "[install]"; then
+        remove_matching_lines "$pip_conf" '^\\[install\\]$'
+    fi
 
     strip_file_if_whitespace_only "$pip_conf"
-    verify_and_finalize "$pip_conf" "pip" 'min-age\|\[global\]' || true
+    if verify_and_finalize "$pip_conf" "pip" 'uploaded-prior-to\|min-age\|\[install\]\|\[global\]'; then
+        emit_config_status "pip" "pip" "removed" "$detail"
+    else
+        emit_config_status "pip" "pip" "FAIL" "$detail"
+    fi
     cleanup_empty_file "$pip_conf"
 }
 
@@ -1230,24 +1435,26 @@ remove_uv() {
 
     if ! grep -q '^exclude-newer[[:space:]]*=' "$uv_conf" 2>/dev/null \
         && ! grep -q '^exclude-newer-package[[:space:]]*=' "$uv_conf" 2>/dev/null; then
-        print_status "uv" "ok" "exclude-newer settings not present"
+        emit_config_status "uv" "uv" "ok" "exclude-newer settings not present"
         SKIPPED_TOOLS+=("uv")
         return 0
     fi
-
-    print_status "uv" "removed" "exclude-newer settings"
 
     backup_if_exists "$uv_conf"
     remove_matching_lines "$uv_conf" '^exclude-newer(-package)?[[:space:]]*='
 
     strip_file_if_whitespace_only "$uv_conf"
-    verify_and_finalize "$uv_conf" "uv" 'exclude-newer' || true
+    if verify_and_finalize "$uv_conf" "uv" 'exclude-newer'; then
+        emit_config_status "uv" "uv" "removed" "exclude-newer settings"
+    else
+        emit_config_status "uv" "uv" "FAIL" "exclude-newer settings"
+    fi
     cleanup_empty_file "$uv_conf"
 }
 
 remove_cron_uv() {
     if ! crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
-        print_status "uv cron" "ok" "cron job not present"
+        emit_config_status "uv cron" "uv-cron" "ok" "cron job not present"
         SKIPPED_TOOLS+=("cron-uv")
         return 0
     fi
@@ -1261,51 +1468,56 @@ remove_cron_uv() {
     fi
 
     if ! crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
-        print_status "uv cron" "removed" "daily cron job"
+        emit_config_status "uv cron" "uv-cron" "removed" "daily cron job"
         UPDATED_TOOLS+=("cron-uv")
     else
-        print_status "uv cron" "FAIL" "could not remove cron job"
+        emit_config_status "uv cron" "uv-cron" "FAIL" "could not remove cron job"
         FAILED_TOOLS+=("cron-uv")
     fi
 }
 
 remove_npm() {
     local npmrc="$HOME/.npmrc"
+    local current
 
     if ! grep -q '^min-release-age=' "$npmrc" 2>/dev/null; then
-        print_status "npm" "ok" "min-release-age not present"
+        emit_config_status "npm" "npm" "ok" "min-release-age not present"
         SKIPPED_TOOLS+=("npm")
         return 0
     fi
 
-    local current
     current=$(grep '^min-release-age=' "$npmrc" | head -1 | sed 's/.*=//')
-    print_status "npm" "removed" "min-release-age=$current"
 
     backup_if_exists "$npmrc"
     remove_matching_lines "$npmrc" '^min-release-age='
 
     strip_file_if_whitespace_only "$npmrc"
-    verify_and_finalize "$npmrc" "npm" 'min-release-age' || true
+    if verify_and_finalize "$npmrc" "npm" 'min-release-age'; then
+        emit_config_status "npm" "npm" "removed" "min-release-age=$current"
+    else
+        emit_config_status "npm" "npm" "FAIL" "min-release-age=$current"
+    fi
     cleanup_empty_file "$npmrc"
 }
 
 remove_pnpm() {
     if ! grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null \
         && ! grep -q '^minimum-release-age-exclude\[\]=' "$PNPM_RC_PATH" 2>/dev/null; then
-        print_status "pnpm" "ok" "minimum-release-age settings not present"
+        emit_config_status "pnpm" "pnpm" "ok" "minimum-release-age settings not present"
         SKIPPED_TOOLS+=("pnpm")
         return 0
     fi
-
-    print_status "pnpm" "removed" "minimum-release-age settings"
 
     backup_if_exists "$PNPM_RC_PATH"
     remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age='
     remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age-exclude\\[\\]='
 
     strip_file_if_whitespace_only "$PNPM_RC_PATH"
-    verify_and_finalize "$PNPM_RC_PATH" "pnpm" 'minimum-release-age' || true
+    if verify_and_finalize "$PNPM_RC_PATH" "pnpm" 'minimum-release-age'; then
+        emit_config_status "pnpm" "pnpm" "removed" "minimum-release-age settings"
+    else
+        emit_config_status "pnpm" "pnpm" "FAIL" "minimum-release-age settings"
+    fi
     cleanup_empty_file "$PNPM_RC_PATH"
 }
 
@@ -1314,12 +1526,10 @@ remove_bun() {
 
     if ! grep -q '^minimumReleaseAge[[:space:]]*=' "$bunfig" 2>/dev/null \
         && ! grep -q '^minimumReleaseAgeExcludes[[:space:]]*=' "$bunfig" 2>/dev/null; then
-        print_status "bun" "ok" "minimumReleaseAge settings not present"
+        emit_config_status "bun" "bun" "ok" "minimumReleaseAge settings not present"
         SKIPPED_TOOLS+=("bun")
         return 0
     fi
-
-    print_status "bun" "removed" "minimumReleaseAge settings"
 
     backup_if_exists "$bunfig"
     remove_matching_lines "$bunfig" '^minimumReleaseAge[[:space:]]*='
@@ -1330,28 +1540,35 @@ remove_bun() {
     fi
 
     strip_file_if_whitespace_only "$bunfig"
-    verify_and_finalize "$bunfig" "bun" 'minimumReleaseAge\|minimumReleaseAgeExcludes\|\[install\]' || true
+    if verify_and_finalize "$bunfig" "bun" 'minimumReleaseAge\|minimumReleaseAgeExcludes\|\[install\]'; then
+        emit_config_status "bun" "bun" "removed" "minimumReleaseAge settings"
+    else
+        emit_config_status "bun" "bun" "FAIL" "minimumReleaseAge settings"
+    fi
     cleanup_empty_file "$bunfig"
 }
 
 remove_yarn_classic() {
     local yarnrc="$HOME/.yarnrc"
+    local current
 
     if ! grep -q '^cache-min ' "$yarnrc" 2>/dev/null; then
-        print_status "yarn v1" "ok" "cache-min not present"
+        emit_config_status "yarn v1" "yarn-classic" "ok" "cache-min not present"
         SKIPPED_TOOLS+=("yarn-classic")
         return 0
     fi
 
-    local current
     current=$(grep '^cache-min ' "$yarnrc" | head -1 | awk '{print $2}')
-    print_status "yarn v1" "removed" "cache-min $current"
 
     backup_if_exists "$yarnrc"
     remove_matching_lines "$yarnrc" '^cache-min '
 
     strip_file_if_whitespace_only "$yarnrc"
-    verify_and_finalize "$yarnrc" "yarn-classic" 'cache-min' || true
+    if verify_and_finalize "$yarnrc" "yarn-classic" 'cache-min'; then
+        emit_config_status "yarn v1" "yarn-classic" "removed" "cache-min $current"
+    else
+        emit_config_status "yarn v1" "yarn-classic" "FAIL" "cache-min $current"
+    fi
     cleanup_empty_file "$yarnrc"
 }
 
@@ -1360,19 +1577,21 @@ remove_yarn_berry() {
 
     if ! grep -q '^npmMinimalAgeGate:' "$yarnrc_yml" 2>/dev/null \
         && ! grep -q '^npmPreapprovedPackages:' "$yarnrc_yml" 2>/dev/null; then
-        print_status "yarn v2+" "ok" "native age gate not present"
+        emit_config_status "yarn v2+" "yarn-berry" "ok" "native age gate not present"
         SKIPPED_TOOLS+=("yarn-berry")
         return 0
     fi
-
-    print_status "yarn v2+" "removed" "native age gate"
 
     backup_if_exists "$yarnrc_yml"
     remove_matching_lines "$yarnrc_yml" '^npmMinimalAgeGate:'
     remove_matching_lines "$yarnrc_yml" '^npmPreapprovedPackages:'
 
     strip_file_if_whitespace_only "$yarnrc_yml"
-    verify_and_finalize "$yarnrc_yml" "yarn-berry" 'npmMinimalAgeGate\|npmPreapprovedPackages' || true
+    if verify_and_finalize "$yarnrc_yml" "yarn-berry" 'npmMinimalAgeGate\|npmPreapprovedPackages'; then
+        emit_config_status "yarn v2+" "yarn-berry" "removed" "native age gate"
+    else
+        emit_config_status "yarn v2+" "yarn-berry" "FAIL" "native age gate"
+    fi
     cleanup_empty_file "$yarnrc_yml"
 }
 
@@ -1383,6 +1602,7 @@ validate_configs() {
     local bunfig="$HOME/.bunfig.toml"
     local yarnrc="$HOME/.yarnrc"
     local yarnrc_yml="$HOME/.yarnrc.yml"
+    local expected_pip_line="uploaded-prior-to = $(pip_cutoff_timestamp)"
     local expected_uv_date="exclude-newer = \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
     local expected_pnpm_age="minimum-release-age=$(( MIN_AGE_DAYS * 1440 ))"
     local expected_bun_age="minimumReleaseAge = $(( MIN_AGE_DAYS * 86400 ))"
@@ -1413,13 +1633,14 @@ validate_configs() {
     fi
 
     if [[ -f "$pip_conf" ]]; then
-        if grep -Fqx "min-age = ${MIN_AGE_DAYS}d" "$pip_conf" 2>/dev/null; then
-            record_validation_ok "pip" "min-age = ${MIN_AGE_DAYS}d" "pip"
+        if grep -Fqx "$expected_pip_line" "$pip_conf" 2>/dev/null \
+            && ! grep -q '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" 2>/dev/null; then
+            record_validation_ok "pip" "uploaded-prior-to matches" "pip"
         else
-            record_validation_fail "pip" "expected min-age = ${MIN_AGE_DAYS}d" "pip"
+            record_validation_fail "pip" "uploaded-prior-to setting does not match" "pip"
         fi
     else
-        print_status "pip" "--" "config not present"
+        record_validation_skip "pip" "config not present" "pip"
     fi
 
     if [[ -f "$uv_conf" ]]; then
@@ -1431,7 +1652,7 @@ validate_configs() {
             record_validation_fail "uv" "exclude-newer settings do not match" "uv"
         fi
     else
-        print_status "uv" "--" "config not present"
+        record_validation_skip "uv" "config not present" "uv"
     fi
 
     if [[ -f "$npmrc" ]]; then
@@ -1441,7 +1662,7 @@ validate_configs() {
             record_validation_fail "npm" "expected min-release-age=${MIN_AGE_DAYS}" "npm"
         fi
     else
-        print_status "npm" "--" "config not present"
+        record_validation_skip "npm" "config not present" "npm"
     fi
 
     if [[ -f "$PNPM_RC_PATH" ]]; then
@@ -1453,7 +1674,7 @@ validate_configs() {
             record_validation_fail "pnpm" "minimum-release-age settings do not match" "pnpm"
         fi
     else
-        print_status "pnpm" "--" "config not present"
+        record_validation_skip "pnpm" "config not present" "pnpm"
     fi
 
     if [[ -f "$bunfig" ]]; then
@@ -1465,7 +1686,7 @@ validate_configs() {
             record_validation_fail "bun" "minimumReleaseAge settings do not match" "bun"
         fi
     else
-        print_status "bun" "--" "config not present"
+        record_validation_skip "bun" "config not present" "bun"
     fi
 
     if [[ -f "$yarnrc" ]]; then
@@ -1475,7 +1696,7 @@ validate_configs() {
             record_validation_fail "yarn v1" "expected $expected_yarn_v1_age" "yarn-classic"
         fi
     else
-        print_status "yarn v1" "--" "config not present"
+        record_validation_skip "yarn v1" "config not present" "yarn-classic"
     fi
 
     if [[ -f "$yarnrc_yml" ]]; then
@@ -1487,13 +1708,19 @@ validate_configs() {
             record_validation_fail "yarn v2+" "native age gate settings do not match" "yarn-berry"
         fi
     else
-        print_status "yarn v2+" "--" "config not present"
+        record_validation_skip "yarn v2+" "config not present" "yarn-berry"
     fi
 }
 
 main() {
     parse_args "$@"
 
+    NORMAL_MODE_REPORTING=false
+    RESULT_TOOL_KEYS=()
+    RESULT_CONFIG_STATUSES=()
+    RESULT_CONFIG_DETAILS=()
+    RESULT_VALIDATION_STATUSES=()
+    RESULT_VALIDATION_DETAILS=()
     FAILED_TOOLS=()
     SKIPPED_TOOLS=()
     UPDATED_TOOLS=()
@@ -1507,15 +1734,15 @@ main() {
         echo ""
         print_tool_overview
         echo "  Removing settings"
-        echo "  ----------------------------------------------------------"
+        print_separator
         printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
-        echo "  ----------------------------------------------------------"
+        print_separator
 
         run_remove_tools pip uv uv-cron npm pnpm bun yarn-classic yarn-berry
 
         echo ""
         echo "  Summary"
-        echo "  ----------------------------------------------------------"
+        print_separator
         echo "  ${#SKIPPED_TOOLS[@]} not present, ${#UPDATED_TOOLS[@]} removed, ${#FAILED_TOOLS[@]} failed"
 
         if [[ ${#FAILED_TOOLS[@]} -gt 0 ]]; then
@@ -1534,15 +1761,15 @@ main() {
         echo ""
         print_tool_overview
         echo "  Removing selected settings"
-        echo "  ----------------------------------------------------------"
+        print_separator
         printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
-        echo "  ----------------------------------------------------------"
+        print_separator
 
         run_remove_tools "${REMOVE_TOOLS[@]}"
 
         echo ""
         echo "  Summary"
-        echo "  ----------------------------------------------------------"
+        print_separator
         echo "  ${#SKIPPED_TOOLS[@]} not present, ${#UPDATED_TOOLS[@]} removed, ${#FAILED_TOOLS[@]} failed"
 
         if [[ ${#FAILED_TOOLS[@]} -gt 0 ]]; then
@@ -1560,9 +1787,9 @@ main() {
     echo "  minimum age: ${MIN_AGE_DAYS} days"
     echo ""
     echo "  Tool readiness"
-    echo "  ----------------------------------------------------------"
-    printf "  %-16s %-10s %-12s %-10s %s\n" "TOOL" "INSTALLED" "VERSION" "STATUS" "DETAIL"
-    echo "  ----------------------------------------------------------"
+    print_separator
+    printf "  %-16s %-10s %-12s %-32s %-10s %s\n" "TOOL" "INSTALLED" "VERSION" "PATH" "STATUS" "DETAIL"
+    print_separator
 
     if ! run_preflight_checks; then
         echo ""
@@ -1572,10 +1799,8 @@ main() {
     fi
 
     echo ""
-    echo "  Configuration"
-    echo "  ----------------------------------------------------------"
-    printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
-    echo "  ----------------------------------------------------------"
+    NORMAL_MODE_REPORTING=true
+    init_results_table
 
     setup_pip
     setup_uv
@@ -1586,17 +1811,12 @@ main() {
     setup_yarn_classic
     setup_yarn_berry
 
-    echo ""
-    echo "  Validation"
-    echo "  ----------------------------------------------------------"
-    printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
-    echo "  ----------------------------------------------------------"
-
     validate_configs
+    print_results_table
+    NORMAL_MODE_REPORTING=false
 
-    echo ""
     echo "  Summary"
-    echo "  ----------------------------------------------------------"
+    print_separator
     echo "  ${#SKIPPED_TOOLS[@]} unchanged, ${#UPDATED_TOOLS[@]} updated, ${#FAILED_TOOLS[@]} failed"
     echo "  ${#VALIDATED_TOOLS[@]} validated, ${#VALIDATION_FAILED_TOOLS[@]} validation errors"
 
