@@ -12,7 +12,7 @@ test_macos_wrapper() {
     install_fake_validation_tools "4.10.0"
 
     local output
-    output=$(bash "$PROJECT_ROOT/set_package_min_age_macos.sh" 6 --yarn-exception "@myorg/*")
+    output=$(bash "$PROJECT_ROOT/set_package_min_age_macos.sh" 6 --exception 'yarn-berry:@myorg/*')
 
     assert_contains "$output" "set-minimum-package-release-age (macOS)"
     assert_file_contains "$HOME/Library/Preferences/pnpm/rc" "minimum-release-age=8640"

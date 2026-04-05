@@ -7,18 +7,22 @@ PLATFORM_NAME="${PLATFORM_NAME:-Unknown}"
 PNPM_RC_PATH="${PNPM_RC_PATH:-$HOME/.config/pnpm/rc}"
 
 REMOVE_MODE=false
+REMOVE_SCOPED_MODE=false
 CUSTOM_DAYS=""
 MIN_AGE_DAYS=7
 BACKUP_SUFFIX=""
+REMOVE_TOOLS=()
 UV_EXCEPTIONS=()
 PNPM_EXCEPTIONS=()
 BUN_EXCEPTIONS=()
 YARN_EXCEPTIONS=()
+TOOL_DETECTION_CACHE=""
 FAILED_TOOLS=()
 SKIPPED_TOOLS=()
 UPDATED_TOOLS=()
 VALIDATED_TOOLS=()
 VALIDATION_FAILED_TOOLS=()
+PREFLIGHT_FAILED_TOOLS=()
 
 usage() {
     cat <<EOF
@@ -30,37 +34,145 @@ Arguments:
   DAYS                    Minimum age in days (default: 7). Accepts "14" or "14d".
 
 Options:
-  --uv-exception RULE     Add a uv exclude-newer-package override, e.g. "setuptools=false"
-                          or "tqdm=30 days". May be provided multiple times.
-  --pnpm-exception ITEM   Add a pnpm minimum-release-age-exclude selector. May be provided
-                          multiple times.
-  --bun-exception ITEM    Add a bun minimumReleaseAgeExcludes package name. May be provided
-                          multiple times.
-  --yarn-exception ITEM   Add a Yarn Berry npmPreapprovedPackages pattern. May be provided
-                          multiple times.
+  --exception SPEC        Add a native exception in the form:
+                          uv:<package>=false
+                          uv:<package>=<duration-or-rfc3339>
+                          pnpm:<selector>
+                          bun:<package>
+                          yarn-berry:<pattern>
   --remove                Remove all settings previously added by this script.
+  --remove-tool TOOL      Remove settings only for a specific managed tool. May be provided
+                          multiple times.
   -h, --help              Show this help message and exit.
 
 Examples:
   $(basename "$0")                         # Set minimum age to 7 days (default)
   $(basename "$0") 14                      # Set minimum age to 14 days
   $(basename "$0") 1d                      # Set minimum age to 1 day
-  $(basename "$0") --uv-exception foo=false 14
-  $(basename "$0") --pnpm-exception webpack --bun-exception typescript
-  $(basename "$0") --yarn-exception '@myorg/*'
+  $(basename "$0") --exception uv:foo=false 14
+  $(basename "$0") --exception pnpm:webpack --exception bun:typescript
+  $(basename "$0") --exception yarn-berry:'@myorg/*'
+  $(basename "$0") --remove-tool uv --remove-tool uv-cron
   $(basename "$0") --remove                # Remove all settings
 EOF
     exit 0
 }
 
+array_contains() {
+    local needle="$1"
+    shift
+    local item
+
+    for item in "$@"; do
+        if [[ "$item" == "$needle" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+tool_config_path() {
+    case "$1" in
+        pip) printf '%s\n' "$HOME/.config/pip/pip.conf" ;;
+        uv) printf '%s\n' "$HOME/.config/uv/uv.toml" ;;
+        uv-cron) printf '%s\n' "crontab entry ($CRON_MARKER)" ;;
+        npm) printf '%s\n' "$HOME/.npmrc" ;;
+        pnpm) printf '%s\n' "$PNPM_RC_PATH" ;;
+        bun) printf '%s\n' "$HOME/.bunfig.toml" ;;
+        yarn-classic) printf '%s\n' "$HOME/.yarnrc" ;;
+        yarn-berry) printf '%s\n' "$HOME/.yarnrc.yml" ;;
+        *) return 1 ;;
+    esac
+}
+
+tool_supports_native_exceptions() {
+    case "$1" in
+        uv|pnpm|bun|yarn-berry) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+parse_exception_spec() {
+    local spec="$1"
+    local target value
+
+    if [[ "$spec" != *:* || "$spec" == :* || "$spec" == *: ]]; then
+        echo "Error: --exception must use the format target:value." >&2
+        exit 1
+    fi
+
+    target=${spec%%:*}
+    value=${spec#*:}
+
+    case "$target" in
+        uv)
+            if [[ "$value" != *=* || "$value" == =* || "$value" == *= ]]; then
+                echo "Error: uv exceptions must use package=false or package=<duration-or-rfc3339>." >&2
+                exit 1
+            fi
+            UV_EXCEPTIONS+=("$value")
+            ;;
+        pnpm)
+            if [[ -z "$value" ]]; then
+                echo "Error: pnpm exceptions require a selector." >&2
+                exit 1
+            fi
+            PNPM_EXCEPTIONS+=("$value")
+            ;;
+        bun)
+            if [[ -z "$value" ]]; then
+                echo "Error: bun exceptions require a package name." >&2
+                exit 1
+            fi
+            BUN_EXCEPTIONS+=("$value")
+            ;;
+        yarn-berry)
+            if [[ -z "$value" ]]; then
+                echo "Error: yarn-berry exceptions require a package pattern." >&2
+                exit 1
+            fi
+            YARN_EXCEPTIONS+=("$value")
+            ;;
+        pip|npm|yarn-classic)
+            echo "Error: $target does not support native exceptions." >&2
+            exit 1
+            ;;
+        *)
+            echo "Error: Unknown exception target: $target" >&2
+            exit 1
+            ;;
+    esac
+}
+
+parse_remove_tool() {
+    local tool="$1"
+
+    case "$tool" in
+        pip|uv|uv-cron|npm|pnpm|bun|yarn-classic|yarn-berry)
+            ;;
+        *)
+            echo "Error: Unknown remove tool: $tool" >&2
+            exit 1
+            ;;
+    esac
+
+    if ! array_contains "$tool" "${REMOVE_TOOLS[@]-}"; then
+        REMOVE_TOOLS+=("$tool")
+    fi
+}
+
 parse_args() {
     REMOVE_MODE=false
+    REMOVE_SCOPED_MODE=false
     CUSTOM_DAYS=""
     MIN_AGE_DAYS=7
+    REMOVE_TOOLS=()
     UV_EXCEPTIONS=()
     PNPM_EXCEPTIONS=()
     BUN_EXCEPTIONS=()
     YARN_EXCEPTIONS=()
+    TOOL_DETECTION_CACHE=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -68,40 +180,21 @@ parse_args() {
                 REMOVE_MODE=true
                 shift
                 ;;
-            --uv-exception)
+            --exception)
                 if [[ $# -lt 2 || -z "${2:-}" ]]; then
-                    echo "Error: --uv-exception requires a value." >&2
+                    echo "Error: --exception requires a value." >&2
                     exit 1
                 fi
-                if [[ "$2" != *=* || "$2" == =* || "$2" == *= ]]; then
-                    echo "Error: --uv-exception must use the format package=false or package=<duration-or-rfc3339>." >&2
-                    exit 1
-                fi
-                UV_EXCEPTIONS+=("$2")
+                parse_exception_spec "$2"
                 shift 2
                 ;;
-            --pnpm-exception)
+            --remove-tool)
                 if [[ $# -lt 2 || -z "${2:-}" ]]; then
-                    echo "Error: --pnpm-exception requires a value." >&2
+                    echo "Error: --remove-tool requires a value." >&2
                     exit 1
                 fi
-                PNPM_EXCEPTIONS+=("$2")
-                shift 2
-                ;;
-            --bun-exception)
-                if [[ $# -lt 2 || -z "${2:-}" ]]; then
-                    echo "Error: --bun-exception requires a value." >&2
-                    exit 1
-                fi
-                BUN_EXCEPTIONS+=("$2")
-                shift 2
-                ;;
-            --yarn-exception)
-                if [[ $# -lt 2 || -z "${2:-}" ]]; then
-                    echo "Error: --yarn-exception requires a value." >&2
-                    exit 1
-                fi
-                YARN_EXCEPTIONS+=("$2")
+                REMOVE_SCOPED_MODE=true
+                parse_remove_tool "$2"
                 shift 2
                 ;;
             -h|--help)
@@ -123,9 +216,21 @@ parse_args() {
         esac
     done
 
-    if [[ "$REMOVE_MODE" == true && -n "$CUSTOM_DAYS" ]]; then
-        echo "Error: --remove cannot be combined with a days argument." >&2
+    if [[ "$REMOVE_MODE" == true && "$REMOVE_SCOPED_MODE" == true ]]; then
+        echo "Error: --remove cannot be combined with --remove-tool." >&2
         exit 1
+    fi
+
+    if [[ ( "$REMOVE_MODE" == true || "$REMOVE_SCOPED_MODE" == true ) && -n "$CUSTOM_DAYS" ]]; then
+        echo "Error: removal modes cannot be combined with a days argument." >&2
+        exit 1
+    fi
+
+    if [[ "$REMOVE_MODE" == true || "$REMOVE_SCOPED_MODE" == true ]]; then
+        if [[ ${#UV_EXCEPTIONS[@]} -gt 0 || ${#PNPM_EXCEPTIONS[@]} -gt 0 || ${#BUN_EXCEPTIONS[@]} -gt 0 || ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
+            echo "Error: removal modes cannot be combined with --exception." >&2
+            exit 1
+        fi
     fi
 
     if [[ -n "$CUSTOM_DAYS" ]]; then
@@ -144,6 +249,14 @@ print_status() {
     printf "  %-16s %-10s %s\n" "$1" "$2" "$3"
 }
 
+print_overview_status() {
+    printf "  %-16s %-10s %-12s %s\n" "$1" "$2" "$3" "$4"
+}
+
+print_readiness_status() {
+    printf "  %-16s %-10s %-12s %-10s %s\n" "$1" "$2" "$3" "$4" "$5"
+}
+
 resolve_tool_path_with_which() {
     local cmd="$1"
     local path=""
@@ -154,84 +267,251 @@ resolve_tool_path_with_which() {
     printf '%s\n' "$path"
 }
 
+extract_semver() {
+    local raw="$1"
+
+    if [[ "$raw" =~ ([0-9]+(\.[0-9]+)+) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+    if [[ "$raw" =~ ^([0-9]+)$ ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+    return 1
+}
+
+detect_command_version() {
+    local tool="$1"
+    local path="$2"
+    local raw_version=""
+
+    case "$tool" in
+        uv)
+            raw_version=$("$path" --version 2>/dev/null || "$path" self version 2>/dev/null || true)
+            ;;
+        *)
+            raw_version=$("$path" --version 2>/dev/null || true)
+            ;;
+    esac
+
+    extract_semver "$raw_version" || true
+}
+
 detect_supported_tool_installations() {
     local tool_path=""
+    local tool_version=""
     local yarn_path=""
     local yarn_version=""
     local yarn_major=""
 
     if tool_path=$(resolve_tool_path_with_which "pip"); then
-        printf 'pip|yes|%s\n' "$tool_path"
+        tool_version=$(detect_command_version "pip" "$tool_path")
+        printf 'pip|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
     elif tool_path=$(resolve_tool_path_with_which "pip3"); then
-        printf 'pip|yes|%s\n' "$tool_path"
+        tool_version=$(detect_command_version "pip" "$tool_path")
+        printf 'pip|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
     else
-        printf 'pip|no|not found\n'
+        printf 'pip|no|not found|n/a\n'
     fi
 
     if tool_path=$(resolve_tool_path_with_which "uv"); then
-        printf 'uv|yes|%s\n' "$tool_path"
+        tool_version=$(detect_command_version "uv" "$tool_path")
+        printf 'uv|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
     else
-        printf 'uv|no|not found\n'
+        printf 'uv|no|not found|n/a\n'
     fi
 
     if tool_path=$(resolve_tool_path_with_which "npm"); then
-        printf 'npm|yes|%s\n' "$tool_path"
+        tool_version=$(detect_command_version "npm" "$tool_path")
+        printf 'npm|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
     else
-        printf 'npm|no|not found\n'
+        printf 'npm|no|not found|n/a\n'
     fi
 
     if tool_path=$(resolve_tool_path_with_which "pnpm"); then
-        printf 'pnpm|yes|%s\n' "$tool_path"
+        tool_version=$(detect_command_version "pnpm" "$tool_path")
+        printf 'pnpm|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
     else
-        printf 'pnpm|no|not found\n'
+        printf 'pnpm|no|not found|n/a\n'
     fi
 
     if tool_path=$(resolve_tool_path_with_which "bun"); then
-        printf 'bun|yes|%s\n' "$tool_path"
+        tool_version=$(detect_command_version "bun" "$tool_path")
+        printf 'bun|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
     else
-        printf 'bun|no|not found\n'
+        printf 'bun|no|not found|n/a\n'
     fi
 
     if yarn_path=$(resolve_tool_path_with_which "yarn"); then
-        yarn_version=$(yarn --version 2>/dev/null || true)
+        yarn_version=$(detect_command_version "yarn" "$yarn_path")
         if [[ "$yarn_version" =~ ^([0-9]+) ]]; then
             yarn_major="${BASH_REMATCH[1]}"
             if [[ "$yarn_major" == "1" ]]; then
-                printf 'yarn v1|yes|%s\n' "$yarn_path"
-                printf 'yarn v2+|no|%s\n' "$yarn_path"
+                printf 'yarn v1|yes|%s|%s\n' "$yarn_path" "${yarn_version:-unknown}"
+                printf 'yarn v2+|no|%s|%s\n' "$yarn_path" "${yarn_version:-unknown}"
                 return
             fi
 
             if [[ "$yarn_major" -ge 2 ]]; then
-                printf 'yarn v1|no|%s\n' "$yarn_path"
-                printf 'yarn v2+|yes|%s\n' "$yarn_path"
+                printf 'yarn v1|no|%s|%s\n' "$yarn_path" "${yarn_version:-unknown}"
+                printf 'yarn v2+|yes|%s|%s\n' "$yarn_path" "${yarn_version:-unknown}"
                 return
             fi
         fi
 
-        printf 'yarn v1|no|%s\n' "$yarn_path"
-        printf 'yarn v2+|no|%s\n' "$yarn_path"
+        printf 'yarn v1|no|%s|%s\n' "$yarn_path" "${yarn_version:-unknown}"
+        printf 'yarn v2+|no|%s|%s\n' "$yarn_path" "${yarn_version:-unknown}"
         return
     fi
 
-    printf 'yarn v1|no|not found\n'
-    printf 'yarn v2+|no|not found\n'
+    printf 'yarn v1|no|not found|n/a\n'
+    printf 'yarn v2+|no|not found|n/a\n'
+}
+
+get_tool_detection_cache() {
+    if [[ -z "$TOOL_DETECTION_CACHE" ]]; then
+        TOOL_DETECTION_CACHE=$(detect_supported_tool_installations)
+    fi
+    printf '%s\n' "$TOOL_DETECTION_CACHE"
+}
+
+lookup_detected_tool_field() {
+    local target_tool="$1"
+    local field="$2"
+    local tool installed path version
+
+    while IFS='|' read -r tool installed path version; do
+        if [[ "$tool" == "$target_tool" ]]; then
+            case "$field" in
+                installed) printf '%s\n' "$installed" ;;
+                path) printf '%s\n' "$path" ;;
+                version) printf '%s\n' "$version" ;;
+                *) return 1 ;;
+            esac
+            return 0
+        fi
+    done <<< "$(get_tool_detection_cache)"
+
+    return 1
+}
+
+version_gte() {
+    local actual="${1%%[-+]*}"
+    local required="${2%%[-+]*}"
+    local actual_parts required_parts
+    local idx limit actual_part required_part
+
+    IFS='.' read -r -a actual_parts <<< "$actual"
+    IFS='.' read -r -a required_parts <<< "$required"
+
+    limit=${#actual_parts[@]}
+    if [[ ${#required_parts[@]} -gt $limit ]]; then
+        limit=${#required_parts[@]}
+    fi
+
+    for ((idx = 0; idx < limit; idx++)); do
+        actual_part=${actual_parts[idx]:-0}
+        required_part=${required_parts[idx]:-0}
+
+        if ((10#$actual_part > 10#$required_part)); then
+            return 0
+        fi
+        if ((10#$actual_part < 10#$required_part)); then
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+pnpm_exception_is_pattern() {
+    [[ "$1" == *"*"* ]]
+}
+
+pnpm_exception_is_version_selector() {
+    local selector="$1"
+
+    if [[ "$selector" == *"||"* ]]; then
+        return 0
+    fi
+
+    if [[ "$selector" == @* ]]; then
+        [[ "$selector" =~ ^@[^/]+/[^@]+@.+$ ]]
+        return
+    fi
+
+    [[ "$selector" =~ ^[^@[:space:]]+@.+$ ]]
+}
+
+record_preflight_ok() {
+    local tool="$1"
+    local installed="$2"
+    local version="$3"
+    local detail="$4"
+    print_readiness_status "$tool" "$installed" "$version" "ok" "$detail"
+}
+
+record_preflight_skip() {
+    local tool="$1"
+    local installed="$2"
+    local version="$3"
+    local detail="$4"
+    print_readiness_status "$tool" "$installed" "$version" "--" "$detail"
+}
+
+record_preflight_fail() {
+    local tool="$1"
+    local installed="$2"
+    local version="$3"
+    local detail="$4"
+    local tool_key="${5:-$tool}"
+    print_readiness_status "$tool" "$installed" "$version" "FAIL" "$detail"
+    PREFLIGHT_FAILED_TOOLS+=("$tool_key")
+}
+
+ensure_tool_version() {
+    local tool="$1"
+    local required="$2"
+    local feature="$3"
+    local fail_key="${4:-$tool}"
+    local installed version
+
+    installed=$(lookup_detected_tool_field "$tool" installed)
+    version=$(lookup_detected_tool_field "$tool" version)
+
+    if [[ "$installed" != "yes" ]]; then
+        record_preflight_skip "$tool" "$installed" "$version" "$feature skipped; tool not installed"
+        return 0
+    fi
+
+    if [[ -z "$version" || "$version" == "unknown" ]]; then
+        record_preflight_fail "$tool" "$installed" "$version" "$feature requires version detection; installed version could not be determined" "$fail_key"
+        return 1
+    fi
+
+    if version_gte "$version" "$required"; then
+        record_preflight_ok "$tool" "$installed" "$version" "$feature requires >= $required"
+        return 0
+    fi
+
+    record_preflight_fail "$tool" "$installed" "$version" "$feature requires >= $required" "$fail_key"
+    return 1
 }
 
 print_tool_overview() {
-    local line=""
-    local tool=""
-    local installed=""
-    local path=""
+    local tool installed path version
 
     echo "  Tool overview"
     echo "  ----------------------------------------------------------"
-    print_status "TOOL" "INSTALLED" "PATH"
+    print_overview_status "TOOL" "INSTALLED" "VERSION" "PATH"
     echo "  ----------------------------------------------------------"
 
-    while IFS='|' read -r tool installed path; do
-        print_status "$tool" "$installed" "$path"
-    done < <(detect_supported_tool_installations)
+    while IFS='|' read -r tool installed path version; do
+        print_overview_status "$tool" "$installed" "$version" "$path"
+    done < <(get_tool_detection_cache)
 
     echo ""
 }
@@ -515,6 +795,120 @@ date_days_ago_rfc3339() {
         return
     fi
     date -d "$1 days ago" +%Y-%m-%dT00:00:00Z
+}
+
+run_preflight_checks() {
+    local status=0
+    local required_pnpm_version="10.16.0"
+    local pnpm_feature="minimum-release-age"
+    local selector
+    local installed version yarn_v1_installed yarn_v2_installed yarn_version
+
+    PREFLIGHT_FAILED_TOOLS=()
+
+    installed=$(lookup_detected_tool_field "pip" installed)
+    version=$(lookup_detected_tool_field "pip" version)
+    if [[ "$installed" == "yes" ]]; then
+        record_preflight_ok "pip" "$installed" "$version" "no runtime gate"
+    else
+        record_preflight_skip "pip" "$installed" "$version" "not installed; config can still be written"
+    fi
+
+    installed=$(lookup_detected_tool_field "uv" installed)
+    version=$(lookup_detected_tool_field "uv" version)
+    if [[ "$installed" == "yes" ]]; then
+        record_preflight_ok "uv" "$installed" "$version" "no runtime gate"
+    else
+        record_preflight_skip "uv" "$installed" "$version" "not installed; config can still be written"
+    fi
+
+    ensure_tool_version "npm" "11.10.0" "min-release-age" || status=1
+
+    for selector in "${PNPM_EXCEPTIONS[@]-}"; do
+        if pnpm_exception_is_version_selector "$selector"; then
+            required_pnpm_version="10.19.0"
+            pnpm_feature="minimum-release-age exceptions"
+            break
+        fi
+        if pnpm_exception_is_pattern "$selector"; then
+            required_pnpm_version="10.17.0"
+            pnpm_feature="minimum-release-age exceptions"
+        fi
+    done
+
+    ensure_tool_version "pnpm" "$required_pnpm_version" "$pnpm_feature" || status=1
+
+    installed=$(lookup_detected_tool_field "bun" installed)
+    version=$(lookup_detected_tool_field "bun" version)
+    if [[ "$installed" == "yes" ]]; then
+        record_preflight_ok "bun" "$installed" "$version" "no runtime gate"
+    else
+        record_preflight_skip "bun" "$installed" "$version" "not installed; config can still be written"
+    fi
+
+    installed=$(lookup_detected_tool_field "yarn v1" installed)
+    version=$(lookup_detected_tool_field "yarn v1" version)
+    if [[ "$installed" == "yes" ]]; then
+        record_preflight_ok "yarn v1" "$installed" "$version" "cache-min workaround; no runtime gate"
+    else
+        record_preflight_skip "yarn v1" "$installed" "$version" "not installed"
+    fi
+
+    if [[ ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
+        yarn_v1_installed=$(lookup_detected_tool_field "yarn v1" installed)
+        yarn_v2_installed=$(lookup_detected_tool_field "yarn v2+" installed)
+        yarn_version=$(lookup_detected_tool_field "yarn v2+" version)
+        version="$yarn_version"
+
+        if [[ "$yarn_v2_installed" == "yes" ]]; then
+            record_preflight_ok "yarn v2+" "$yarn_v2_installed" "$version" "native exceptions supported"
+        elif [[ "$yarn_v1_installed" == "yes" ]]; then
+            record_preflight_fail "yarn v2+" "$yarn_v2_installed" "$version" "yarn-berry exceptions require Yarn >= 2" "yarn-berry"
+            status=1
+        else
+            record_preflight_skip "yarn v2+" "$yarn_v2_installed" "$version" "native exceptions requested; tool not installed"
+        fi
+    else
+        installed=$(lookup_detected_tool_field "yarn v2+" installed)
+        version=$(lookup_detected_tool_field "yarn v2+" version)
+        if [[ "$installed" == "yes" ]]; then
+            record_preflight_ok "yarn v2+" "$installed" "$version" "no runtime gate"
+        else
+            record_preflight_skip "yarn v2+" "$installed" "$version" "not installed; config may still be written"
+        fi
+    fi
+
+    return "$status"
+}
+
+run_remove_tools() {
+    local tool
+
+    for tool in "$@"; do
+        case "$tool" in
+            pip) remove_pip ;;
+            uv) remove_uv ;;
+            uv-cron) remove_cron_uv ;;
+            npm) remove_npm ;;
+            pnpm) remove_pnpm ;;
+            bun) remove_bun ;;
+            yarn-classic) remove_yarn_classic ;;
+            yarn-berry) remove_yarn_berry ;;
+        esac
+    done
+}
+
+print_config_files() {
+    echo "  Config files"
+    echo "  ----------------------------------------------------------"
+    echo "  pip            $(tool_config_path pip)"
+    echo "  uv             $(tool_config_path uv)"
+    echo "  npm            $(tool_config_path npm)"
+    echo "  pnpm           $(tool_config_path pnpm)"
+    echo "  bun            $(tool_config_path bun)"
+    echo "  yarn v1        $(tool_config_path yarn-classic)"
+    echo "  yarn v2+       $(tool_config_path yarn-berry)"
+    echo ""
 }
 
 setup_pip() {
@@ -1105,6 +1499,7 @@ main() {
     UPDATED_TOOLS=()
     VALIDATED_TOOLS=()
     VALIDATION_FAILED_TOOLS=()
+    PREFLIGHT_FAILED_TOOLS=()
 
     if [[ "$REMOVE_MODE" == true ]]; then
         echo ""
@@ -1116,14 +1511,7 @@ main() {
         printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
         echo "  ----------------------------------------------------------"
 
-        remove_pip
-        remove_uv
-        remove_cron_uv
-        remove_npm
-        remove_pnpm
-        remove_bun
-        remove_yarn_classic
-        remove_yarn_berry
+        run_remove_tools pip uv uv-cron npm pnpm bun yarn-classic yarn-berry
 
         echo ""
         echo "  Summary"
@@ -1136,16 +1524,34 @@ main() {
         fi
 
         echo ""
-        echo "  Config files"
-        echo "  ----------------------------------------------------------"
-        echo "  pip            $HOME/.config/pip/pip.conf"
-        echo "  uv             $HOME/.config/uv/uv.toml"
-        echo "  npm            $HOME/.npmrc"
-        echo "  pnpm           $PNPM_RC_PATH"
-        echo "  bun            $HOME/.bunfig.toml"
-        echo "  yarn v1        $HOME/.yarnrc"
-        echo "  yarn v2+       $HOME/.yarnrc.yml"
+        print_config_files
+        return
+    fi
+
+    if [[ "$REMOVE_SCOPED_MODE" == true ]]; then
         echo ""
+        echo "  set-minimum-package-release-age (${PLATFORM_NAME}) -- REMOVE MODE (SCOPED)"
+        echo ""
+        print_tool_overview
+        echo "  Removing selected settings"
+        echo "  ----------------------------------------------------------"
+        printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
+        echo "  ----------------------------------------------------------"
+
+        run_remove_tools "${REMOVE_TOOLS[@]}"
+
+        echo ""
+        echo "  Summary"
+        echo "  ----------------------------------------------------------"
+        echo "  ${#SKIPPED_TOOLS[@]} not present, ${#UPDATED_TOOLS[@]} removed, ${#FAILED_TOOLS[@]} failed"
+
+        if [[ ${#FAILED_TOOLS[@]} -gt 0 ]]; then
+            echo ""
+            echo "  Rolled back: ${FAILED_TOOLS[*]}"
+        fi
+
+        echo ""
+        print_config_files
         return
     fi
 
@@ -1153,7 +1559,19 @@ main() {
     echo "  set-minimum-package-release-age (${PLATFORM_NAME})"
     echo "  minimum age: ${MIN_AGE_DAYS} days"
     echo ""
-    print_tool_overview
+    echo "  Tool readiness"
+    echo "  ----------------------------------------------------------"
+    printf "  %-16s %-10s %-12s %-10s %s\n" "TOOL" "INSTALLED" "VERSION" "STATUS" "DETAIL"
+    echo "  ----------------------------------------------------------"
+
+    if ! run_preflight_checks; then
+        echo ""
+        echo "  Preflight errors: ${PREFLIGHT_FAILED_TOOLS[*]}"
+        echo ""
+        return 1
+    fi
+
+    echo ""
     echo "  Configuration"
     echo "  ----------------------------------------------------------"
     printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
@@ -1193,14 +1611,5 @@ main() {
     fi
 
     echo ""
-    echo "  Config files"
-    echo "  ----------------------------------------------------------"
-    echo "  pip            $HOME/.config/pip/pip.conf"
-    echo "  uv             $HOME/.config/uv/uv.toml"
-    echo "  npm            $HOME/.npmrc"
-    echo "  pnpm           $PNPM_RC_PATH"
-    echo "  bun            $HOME/.bunfig.toml"
-    echo "  yarn v1        $HOME/.yarnrc"
-    echo "  yarn v2+       $HOME/.yarnrc.yml"
-    echo ""
+    print_config_files
 }

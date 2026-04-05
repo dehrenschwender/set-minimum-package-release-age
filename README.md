@@ -20,6 +20,18 @@ The repo now uses a shared core library plus thin platform wrappers:
 | JavaScript | `yarn classic (v1)` | cache TTL workaround, not a true publish-age gate | `~/.yarnrc` |
 | JavaScript | `yarn berry (v2+)` | native age gate + preapproved package patterns | `~/.yarnrc.yml` |
 
+## Feature Matrix
+
+| Tool | Native Age Gate | Native Exceptions | Workaround Only | Scoped Removal | Runtime Version Enforcement |
+|---|---|---|---|---|---|
+| `pip` | yes | no | no | yes | no |
+| `uv` | yes | yes | no | yes | no |
+| `npm` | yes | no | no | yes | yes |
+| `pnpm` | yes | yes | no | yes | yes |
+| `bun` | yes | yes | no | yes | no |
+| `yarn classic (v1)` | no | no | `cache-min` TTL workaround | yes | no |
+| `yarn berry (v2+)` | yes | yes | no | yes | yes for exception requests |
+
 ## Version Notes
 
 - `npm` age gating requires npm `11.10.0+`.
@@ -37,9 +49,10 @@ The repo now uses a shared core library plus thin platform wrappers:
 bash set_package_min_age_macos.sh
 bash set_package_min_age_macos.sh 14
 bash set_package_min_age_macos.sh 1d
-bash set_package_min_age_macos.sh --uv-exception "setuptools=false"
-bash set_package_min_age_macos.sh --pnpm-exception webpack --bun-exception typescript
-bash set_package_min_age_macos.sh --yarn-exception "@myorg/*"
+bash set_package_min_age_macos.sh --exception "uv:setuptools=false"
+bash set_package_min_age_macos.sh --exception "pnpm:webpack" --exception "bun:typescript"
+bash set_package_min_age_macos.sh --exception "yarn-berry:@myorg/*"
+bash set_package_min_age_macos.sh --remove-tool uv --remove-tool uv-cron
 bash set_package_min_age_macos.sh --remove
 bash set_package_min_age_macos.sh --help
 ```
@@ -50,32 +63,60 @@ bash set_package_min_age_macos.sh --help
 bash set_package_min_age_linux.sh
 bash set_package_min_age_linux.sh 14
 bash set_package_min_age_linux.sh 1d
-bash set_package_min_age_linux.sh --uv-exception "setuptools=false"
-bash set_package_min_age_linux.sh --pnpm-exception webpack --bun-exception typescript
-bash set_package_min_age_linux.sh --yarn-exception "@myorg/*"
+bash set_package_min_age_linux.sh --exception "uv:setuptools=false"
+bash set_package_min_age_linux.sh --exception "pnpm:webpack" --exception "bun:typescript"
+bash set_package_min_age_linux.sh --exception "yarn-berry:@myorg/*"
+bash set_package_min_age_linux.sh --remove-tool yarn-berry
 bash set_package_min_age_linux.sh --remove
 bash set_package_min_age_linux.sh --help
 ```
 
 ### Exception Flags
 
-- `--uv-exception RULE`
+- `--exception uv:RULE`
   - format: `package=false` or `package=<duration-or-rfc3339>`
-- `--pnpm-exception SELECTOR`
+- `--exception pnpm:SELECTOR`
   - package name, glob, or supported version selector
-- `--bun-exception PACKAGE`
+- `--exception bun:PACKAGE`
   - package name to bypass the age gate
-- `--yarn-exception PATTERN`
+- `--exception yarn-berry:PATTERN`
   - pattern added to Yarn Berry `npmPreapprovedPackages`
+
+Unsupported exception targets:
+
+- `pip`
+- `npm`
+- `yarn-classic`
 
 Examples:
 
 ```bash
 bash set_package_min_age_linux.sh 7 \
-  --uv-exception "setuptools=false" \
-  --pnpm-exception "@myorg/*" \
-  --bun-exception typescript \
-  --yarn-exception "@myorg/*"
+  --exception "uv:setuptools=false" \
+  --exception "pnpm:@myorg/*" \
+  --exception "bun:typescript" \
+  --exception "yarn-berry:@myorg/*"
+```
+
+### Scoped Removal
+
+Use repeatable `--remove-tool` flags to remove settings for only selected managed tools:
+
+- `pip`
+- `uv`
+- `uv-cron`
+- `npm`
+- `pnpm`
+- `bun`
+- `yarn-classic`
+- `yarn-berry`
+
+Examples:
+
+```bash
+bash set_package_min_age_linux.sh --remove-tool pip
+bash set_package_min_age_linux.sh --remove-tool uv --remove-tool uv-cron
+bash set_package_min_age_linux.sh --remove-tool yarn-berry
 ```
 
 ## What The Scripts Do
@@ -86,9 +127,10 @@ For each supported tool, the script:
 2. Backs up the existing config before modifying it.
 3. Adds or updates the age-gate setting using the unit each tool expects.
 4. Adds native exception settings where that package manager supports them.
-5. Validates every supported tool by checking the config written for that tool.
-6. Diffs the modified file against the backup and rolls back unexpected changes.
-7. Prints a summary of updated, skipped, failed, and validated tools.
+5. Runs a preflight version check for installed tools whose native age-gate features have documented minimum versions.
+6. Validates every supported tool by checking the config written for that tool.
+7. Diffs the modified file against the backup and rolls back unexpected changes.
+8. Prints a summary of updated, skipped, failed, and validated tools.
 
 `uv` is still written with an absolute `exclude-newer` timestamp, so the scripts also manage a daily cron job that refreshes the date.
 
@@ -100,6 +142,7 @@ Both scripts are safe to run repeatedly:
 - If a setting exists with a different value, it is updated.
 - If a setting is missing, it is added.
 - `--remove` is also idempotent and removes managed age-gate settings on repeated runs.
+- `--remove-tool` is also idempotent and only removes the selected managed settings.
 
 ## Testing
 

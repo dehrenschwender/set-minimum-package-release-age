@@ -12,7 +12,7 @@ test_linux_wrapper() {
     install_fake_validation_tools "1.22.22"
 
     local output
-    output=$(bash "$PROJECT_ROOT/set_package_min_age_linux.sh" 3 --pnpm-exception webpack)
+    output=$(bash "$PROJECT_ROOT/set_package_min_age_linux.sh" 3 --exception pnpm:webpack)
 
     assert_contains "$output" "set-minimum-package-release-age (Linux)"
     assert_file_contains "$HOME/.config/pnpm/rc" "minimum-release-age=4320"
