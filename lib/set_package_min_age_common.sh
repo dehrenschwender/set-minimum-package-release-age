@@ -144,6 +144,98 @@ print_status() {
     printf "  %-16s %-10s %s\n" "$1" "$2" "$3"
 }
 
+resolve_tool_path_with_which() {
+    local cmd="$1"
+    local path=""
+
+    path=$(which "$cmd" 2>/dev/null) || return 1
+    [[ -n "$path" ]] || return 1
+
+    printf '%s\n' "$path"
+}
+
+detect_supported_tool_installations() {
+    local tool_path=""
+    local yarn_path=""
+    local yarn_version=""
+    local yarn_major=""
+
+    if tool_path=$(resolve_tool_path_with_which "pip"); then
+        printf 'pip|yes|%s\n' "$tool_path"
+    elif tool_path=$(resolve_tool_path_with_which "pip3"); then
+        printf 'pip|yes|%s\n' "$tool_path"
+    else
+        printf 'pip|no|not found\n'
+    fi
+
+    if tool_path=$(resolve_tool_path_with_which "uv"); then
+        printf 'uv|yes|%s\n' "$tool_path"
+    else
+        printf 'uv|no|not found\n'
+    fi
+
+    if tool_path=$(resolve_tool_path_with_which "npm"); then
+        printf 'npm|yes|%s\n' "$tool_path"
+    else
+        printf 'npm|no|not found\n'
+    fi
+
+    if tool_path=$(resolve_tool_path_with_which "pnpm"); then
+        printf 'pnpm|yes|%s\n' "$tool_path"
+    else
+        printf 'pnpm|no|not found\n'
+    fi
+
+    if tool_path=$(resolve_tool_path_with_which "bun"); then
+        printf 'bun|yes|%s\n' "$tool_path"
+    else
+        printf 'bun|no|not found\n'
+    fi
+
+    if yarn_path=$(resolve_tool_path_with_which "yarn"); then
+        yarn_version=$(yarn --version 2>/dev/null || true)
+        if [[ "$yarn_version" =~ ^([0-9]+) ]]; then
+            yarn_major="${BASH_REMATCH[1]}"
+            if [[ "$yarn_major" == "1" ]]; then
+                printf 'yarn v1|yes|%s\n' "$yarn_path"
+                printf 'yarn v2+|no|%s\n' "$yarn_path"
+                return
+            fi
+
+            if [[ "$yarn_major" -ge 2 ]]; then
+                printf 'yarn v1|no|%s\n' "$yarn_path"
+                printf 'yarn v2+|yes|%s\n' "$yarn_path"
+                return
+            fi
+        fi
+
+        printf 'yarn v1|no|%s\n' "$yarn_path"
+        printf 'yarn v2+|no|%s\n' "$yarn_path"
+        return
+    fi
+
+    printf 'yarn v1|no|not found\n'
+    printf 'yarn v2+|no|not found\n'
+}
+
+print_tool_overview() {
+    local line=""
+    local tool=""
+    local installed=""
+    local path=""
+
+    echo "  Tool overview"
+    echo "  ----------------------------------------------------------"
+    print_status "TOOL" "INSTALLED" "PATH"
+    echo "  ----------------------------------------------------------"
+
+    while IFS='|' read -r tool installed path; do
+        print_status "$tool" "$installed" "$path"
+    done < <(detect_supported_tool_installations)
+
+    echo ""
+}
+
 backup_if_exists() {
     local file="$1"
     if [[ -f "$file" && -s "$file" ]]; then
@@ -1018,6 +1110,7 @@ main() {
         echo ""
         echo "  set-minimum-package-release-age (${PLATFORM_NAME}) -- REMOVE MODE"
         echo ""
+        print_tool_overview
         echo "  Removing settings"
         echo "  ----------------------------------------------------------"
         printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
@@ -1060,6 +1153,7 @@ main() {
     echo "  set-minimum-package-release-age (${PLATFORM_NAME})"
     echo "  minimum age: ${MIN_AGE_DAYS} days"
     echo ""
+    print_tool_overview
     echo "  Configuration"
     echo "  ----------------------------------------------------------"
     printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
