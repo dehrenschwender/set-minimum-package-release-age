@@ -107,6 +107,8 @@ cleanup_test_env() {
 load_common_library() {
     PLATFORM_NAME="${1:-Test}"
     PNPM_RC_PATH="${2:-$HOME/.config/pnpm/rc}"
+    PNPM_CONFIG_PATH="${3:-$HOME/.config/pnpm/config.yaml}"
+    VLT_CONFIG_PATH="${4:-$HOME/.config/vlt/vlt.json}"
 
     platform_date_days_ago_rfc3339() {
         printf '%s\n' "${TEST_FIXED_RFC3339:-2026-03-29T00:00:00Z}"
@@ -116,6 +118,12 @@ load_common_library() {
         local min_age="$1"
         local uv_conf="$2"
         printf '0 0 * * * echo %s >> %s %s\n' "$min_age" "$uv_conf" "$CRON_MARKER"
+    }
+
+    platform_build_vlt_cron_command() {
+        local min_age="$1"
+        local vlt_conf="$2"
+        printf '0 0 * * * echo %s >> %s %s\n' "$min_age" "$vlt_conf" "$VLT_CRON_MARKER"
     }
 
     # shellcheck disable=SC1090
@@ -190,6 +198,8 @@ install_fake_detection_tools() {
     local bun_version="${5:-1.3.2}"
     local uv_version="${6:-0.7.0}"
     local pip_version="${7:-26.0}"
+    local include_vlt="${8:-1}"
+    local vlt_version="${9:-0.0.0}"
 
     cat > "$TEST_BIN_DIR/pip3" <<EOF
 #!/usr/bin/env bash
@@ -268,6 +278,23 @@ EOF
         chmod +x "$TEST_BIN_DIR/bun"
     else
         rm -f "$TEST_BIN_DIR/bun"
+    fi
+
+    if [[ "$include_vlt" == "1" ]]; then
+        cat > "$TEST_BIN_DIR/vlt" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf '%s\n' "$vlt_version"
+    exit 0
+fi
+
+printf 'vlt test binary\n'
+EOF
+        chmod +x "$TEST_BIN_DIR/vlt"
+    else
+        rm -f "$TEST_BIN_DIR/vlt"
     fi
 }
 

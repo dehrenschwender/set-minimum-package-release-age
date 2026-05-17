@@ -15,10 +15,11 @@ The repo now uses a shared core library plus thin platform wrappers:
 | Python | `pip` | upload-time age gate via `uploaded-prior-to` | `~/.config/pip/pip.conf` |
 | Python | `uv` | native age gate + per-package exceptions | `~/.config/uv/uv.toml` |
 | JavaScript | `npm` | native age gate | `~/.npmrc` |
-| JavaScript | `pnpm` | native age gate + selectors to exclude | `~/.config/pnpm/rc` (Linux) / `~/Library/Preferences/pnpm/rc` (macOS) |
+| JavaScript | `pnpm` | native age gate + selectors to exclude | pnpm 11+: `~/.config/pnpm/config.yaml` (Linux) / `~/Library/Preferences/pnpm/config.yaml` (macOS); pnpm 10: platform legacy `rc` |
 | JavaScript | `bun` | native age gate + package excludes | `~/.bunfig.toml` |
 | JavaScript | `yarn classic (v1)` | cache TTL workaround, not a true publish-age gate | `~/.yarnrc` |
 | JavaScript | `yarn berry (v2+)` | native age gate + preapproved package patterns | `~/.yarnrc.yml` |
+| JavaScript | `vlt` | native before-date gate | `~/.config/vlt/vlt.json` (Linux) / `~/Library/Preferences/vlt/vlt.json` (macOS) |
 
 ## Feature Matrix
 
@@ -31,6 +32,7 @@ The repo now uses a shared core library plus thin platform wrappers:
 | `bun` | yes | yes | no | yes | no documented minimum |
 | `yarn classic (v1)` | no | no | `cache-min` TTL workaround | yes | no |
 | `yarn berry (v2+)` | yes | yes | no | yes | yes |
+| `vlt` | yes | no | no | yes | no documented minimum |
 
 ## Version Notes
 
@@ -39,9 +41,11 @@ The repo now uses a shared core library plus thin platform wrappers:
 - `pnpm` `minimumReleaseAge` requires pnpm `10.16.0+`.
 - `pnpm` exclusion patterns require pnpm `10.17.0+`.
 - `pnpm` version-selector exclusions require pnpm `10.19.0+`.
+- pnpm `11.0.0+` global settings are written to `config.yaml` using YAML keys; older pnpm releases keep using the legacy platform `rc` path.
 - Yarn Berry `npmMinimalAgeGate` and `npmPreapprovedPackages` require Yarn `4.10.0+`.
 - `uv` uses `exclude-newer` / `exclude-newer-package`; the current docs confirm support, but this repo does not pin an official minimum introducing version.
 - `bun` uses `minimumReleaseAge` / `minimumReleaseAgeExcludes`; the current docs confirm support, but this repo does not pin an official minimum introducing version.
+- `vlt` uses `before`; the current implementation supports the config, but this repo does not pin an official minimum introducing version.
 - Yarn Classic only supports `cache-min`, which is a cache freshness workaround rather than native publish-date filtering.
 
 ## Usage
@@ -89,6 +93,7 @@ Unsupported exception targets:
 
 - `pip`
 - `npm`
+- `vlt`
 - `yarn-classic`
 
 Examples:
@@ -113,6 +118,8 @@ Use repeatable `--remove-tool` flags to remove settings for only selected manage
 - `bun`
 - `yarn-classic`
 - `yarn-berry`
+- `vlt`
+- `vlt-cron`
 
 Examples:
 
@@ -120,6 +127,7 @@ Examples:
 bash set_package_min_age_linux.sh --remove-tool pip
 bash set_package_min_age_linux.sh --remove-tool uv --remove-tool uv-cron
 bash set_package_min_age_linux.sh --remove-tool yarn-berry
+bash set_package_min_age_linux.sh --remove-tool vlt --remove-tool vlt-cron
 ```
 
 ## What The Scripts Do
@@ -138,6 +146,8 @@ For each supported tool, the script:
 `pip` is written as an absolute `uploaded-prior-to` timestamp under `[install]`.
 
 `uv` is still written with an absolute `exclude-newer` timestamp, so the scripts also manage a daily cron job that refreshes the date.
+
+`vlt` is written with an absolute `before` timestamp under `config`, so the scripts also manage a daily cron job that reruns the wrapper in a refresh mode for the VLT config only.
 
 ## Idempotence
 
