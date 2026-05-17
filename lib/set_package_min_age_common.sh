@@ -4,7 +4,9 @@
 set -euo pipefail
 
 PLATFORM_NAME="${PLATFORM_NAME:-Unknown}"
+PNPM_CONFIG_PATH="${PNPM_CONFIG_PATH:-$HOME/.config/pnpm/config.yaml}"
 PNPM_RC_PATH="${PNPM_RC_PATH:-$HOME/.config/pnpm/rc}"
+VLT_CONFIG_PATH="${VLT_CONFIG_PATH:-$HOME/.config/vlt/vlt.json}"
 
 REMOVE_MODE=false
 REMOVE_SCOPED_MODE=false
@@ -34,7 +36,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS] [DAYS]
 
-Set a minimum package release age across pip, uv, npm, pnpm, bun, and yarn.
+Set a minimum package release age across pip, uv, npm, pnpm, bun, yarn, and vlt.
 
 Arguments:
   DAYS                    Minimum age in days (default: 7). Accepts "14" or "14d".
@@ -84,10 +86,12 @@ tool_config_path() {
         uv) printf '%s\n' "$HOME/.config/uv/uv.toml" ;;
         uv-cron) printf '%s\n' "crontab entry ($CRON_MARKER)" ;;
         npm) printf '%s\n' "$HOME/.npmrc" ;;
-        pnpm) printf '%s\n' "$PNPM_RC_PATH" ;;
+        pnpm) pnpm_active_config_path ;;
         bun) printf '%s\n' "$HOME/.bunfig.toml" ;;
         yarn-classic) printf '%s\n' "$HOME/.yarnrc" ;;
         yarn-berry) printf '%s\n' "$HOME/.yarnrc.yml" ;;
+        vlt) printf '%s\n' "$VLT_CONFIG_PATH" ;;
+        vlt-cron) printf '%s\n' "crontab entry ($VLT_CRON_MARKER)" ;;
         *) return 1 ;;
     esac
 }
@@ -140,7 +144,7 @@ parse_exception_spec() {
             fi
             YARN_EXCEPTIONS+=("$value")
             ;;
-        pip|npm|yarn-classic)
+        pip|npm|yarn-classic|vlt)
             echo "Error: $target does not support native exceptions." >&2
             exit 1
             ;;
@@ -155,7 +159,7 @@ parse_remove_tool() {
     local tool="$1"
 
     case "$tool" in
-        pip|uv|uv-cron|npm|pnpm|bun|yarn-classic|yarn-berry)
+        pip|uv|uv-cron|npm|pnpm|bun|yarn-classic|yarn-berry|vlt|vlt-cron)
             ;;
         *)
             echo "Error: Unknown remove tool: $tool" >&2
@@ -285,16 +289,18 @@ result_tool_display_name() {
         bun) printf '%s\n' "bun" ;;
         yarn-classic) printf '%s\n' "yarn v1" ;;
         yarn-berry) printf '%s\n' "yarn v2+" ;;
+        vlt) printf '%s\n' "vlt" ;;
+        vlt-cron) printf '%s\n' "vlt cron" ;;
         *) printf '%s\n' "$1" ;;
     esac
 }
 
 init_results_table() {
-    RESULT_TOOL_KEYS=(pip uv uv-cron npm pnpm bun yarn-classic yarn-berry)
-    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- --)
-    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "")
-    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- --)
-    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "")
+    RESULT_TOOL_KEYS=(pip uv uv-cron npm pnpm bun yarn-classic yarn-berry vlt vlt-cron)
+    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- -- -- --)
+    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "" "" "")
+    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- -- -- --)
+    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "" "" "")
 }
 
 result_row_index() {
@@ -307,6 +313,8 @@ result_row_index() {
         bun) printf '%s\n' 5 ;;
         yarn-classic) printf '%s\n' 6 ;;
         yarn-berry) printf '%s\n' 7 ;;
+        vlt) printf '%s\n' 8 ;;
+        vlt-cron) printf '%s\n' 9 ;;
         *) return 1 ;;
     esac
 }
@@ -500,6 +508,13 @@ detect_supported_tool_installations() {
         printf 'bun|no|not found|n/a\n'
     fi
 
+    if tool_path=$(resolve_tool_path_with_which "vlt"); then
+        tool_version=$(detect_command_version "vlt" "$tool_path")
+        printf 'vlt|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
+    else
+        printf 'vlt|no|not found|n/a\n'
+    fi
+
     if yarn_path=$(resolve_tool_path_with_which "yarn"); then
         yarn_version=$(detect_command_version "yarn" "$yarn_path")
         if [[ "$yarn_version" =~ ^([0-9]+) ]]; then
@@ -601,6 +616,38 @@ pnpm_exception_is_version_selector() {
     [[ "$selector" =~ ^[^@[:space:]]+@.+$ ]]
 }
 
+pnpm_active_config_is_yaml() {
+    local installed version
+
+    installed=$(lookup_detected_tool_field "pnpm" installed 2>/dev/null || printf 'no')
+    version=$(lookup_detected_tool_field "pnpm" version 2>/dev/null || printf 'unknown')
+
+    if [[ "$installed" == "yes" && -n "$version" && "$version" != "unknown" ]] \
+        && ! version_gte "$version" "11.0.0"; then
+        return 1
+    fi
+
+    return 0
+}
+
+pnpm_active_config_path() {
+    if pnpm_active_config_is_yaml; then
+        printf '%s\n' "$PNPM_CONFIG_PATH"
+        return
+    fi
+
+    printf '%s\n' "$PNPM_RC_PATH"
+}
+
+pnpm_active_config_label() {
+    if pnpm_active_config_is_yaml; then
+        printf '%s\n' "config.yaml"
+        return
+    fi
+
+    printf '%s\n' "legacy rc"
+}
+
 record_preflight_ok() {
     local tool="$1"
     local installed="$2"
@@ -682,14 +729,12 @@ backup_if_exists() {
     fi
 }
 
-verify_and_finalize() {
+verify_file_changes() {
     local file="$1"
-    local tool_name="$2"
-    local expected_pattern="$3"
+    local expected_pattern="$2"
     local backup="${file}${BACKUP_SUFFIX}"
 
     if [[ ! -f "$backup" ]]; then
-        UPDATED_TOOLS+=("$tool_name")
         return 0
     fi
 
@@ -698,7 +743,6 @@ verify_and_finalize() {
 
     if [[ -z "$diff_output" ]]; then
         rm -f "$backup"
-        UPDATED_TOOLS+=("$tool_name")
         return 0
     fi
 
@@ -707,7 +751,6 @@ verify_and_finalize() {
 
     if [[ -z "$content_lines" ]]; then
         rm -f "$backup"
-        UPDATED_TOOLS+=("$tool_name")
         return 0
     fi
 
@@ -719,13 +762,25 @@ verify_and_finalize() {
         echo "$diff_output" | sed 's/^/                              /'
         cp "$backup" "$file"
         rm -f "$backup"
-        FAILED_TOOLS+=("$tool_name")
         return 1
     fi
 
     rm -f "$backup"
-    UPDATED_TOOLS+=("$tool_name")
     return 0
+}
+
+verify_and_finalize() {
+    local file="$1"
+    local tool_name="$2"
+    local expected_pattern="$3"
+
+    if verify_file_changes "$file" "$expected_pattern"; then
+        UPDATED_TOOLS+=("$tool_name")
+        return 0
+    fi
+
+    FAILED_TOOLS+=("$tool_name")
+    return 1
 }
 
 ensure_file_exists() {
@@ -774,6 +829,46 @@ remove_matching_lines() {
         $0 ~ match_regex { next }
         { print }
     ' "$file"
+}
+
+remove_yaml_top_level_key() {
+    local file="$1"
+    local key="$2"
+
+    write_file_from_command "$file" awk -v key="$key" '
+        $0 ~ "^" key ":[[:space:]]*" {
+            skip = 1
+            next
+        }
+        skip && $0 ~ /^[^[:space:]#][^:]*:/ {
+            skip = 0
+        }
+        skip { next }
+        { print }
+    ' "$file"
+}
+
+upsert_yaml_scalar() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+
+    remove_yaml_top_level_key "$file" "$key"
+    printf '%s: %s\n' "$key" "$value" >> "$file"
+}
+
+upsert_yaml_array() {
+    local file="$1"
+    local key="$2"
+    shift 2
+    local item
+
+    remove_yaml_top_level_key "$file" "$key"
+    if [[ $# -eq 0 ]]; then
+        return 0
+    fi
+
+    printf '%s: %s\n' "$key" "$(yaml_flow_array "$@")" >> "$file"
 }
 
 upsert_line_in_section() {
@@ -885,6 +980,212 @@ yaml_flow_array() {
     done
     result+="]"
     printf '%s' "$result"
+}
+
+json_quote() {
+    local value="$1"
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    printf '"%s"' "$value"
+}
+
+shell_quote() {
+    local value="$1"
+    value=${value//\'/\'\\\'\'}
+    printf "'%s'" "$value"
+}
+
+upsert_vlt_before_config() {
+    local file="$1"
+    local before_date="$2"
+
+    write_file_from_command "$file" awk -v before_date="$before_date" '
+        function print_before_line(indent, comma) {
+            print indent "\"before\": \"" before_date "\"" comma
+        }
+        {
+            lines[NR] = $0
+            if (!config_start && match($0, /^[[:space:]]*"config"[[:space:]]*:[[:space:]]*\{/)) {
+                config_start = NR
+                config_indent = substr($0, 1, index($0, "\"") - 1)
+                config_child_indent = config_indent "  "
+            } else if (config_start && !config_end && NR > config_start && $0 ~ "^" config_indent "}[,]?[[:space:]]*$") {
+                config_end = NR
+            }
+            if (config_start && !config_end && NR > config_start && $0 ~ /^[[:space:]]*"before"[[:space:]]*:/) {
+                before_line = NR
+            }
+            if ($0 ~ /^[[:space:]]*}[,]?[[:space:]]*$/) {
+                root_end = NR
+            }
+        }
+        END {
+            if (NR == 0) {
+                print "{"
+                print "  \"config\": {"
+                print_before_line("    ", "")
+                print "  }"
+                print "}"
+                exit
+            }
+
+            if (before_line) {
+                for (i = 1; i <= NR; i++) {
+                    if (i == before_line) {
+                        comma = lines[i] ~ /,[[:space:]]*$/ ? "," : ""
+                        print_before_line(config_child_indent, comma)
+                    } else {
+                        print lines[i]
+                    }
+                }
+                exit
+            }
+
+            if (config_start && config_end) {
+                has_config_items = 0
+                for (i = config_start + 1; i < config_end; i++) {
+                    if (lines[i] !~ /^[[:space:]]*$/) {
+                        has_config_items = 1
+                    }
+                }
+                for (i = 1; i <= NR; i++) {
+                    if (i == config_start) {
+                        print lines[i]
+                        print_before_line(config_child_indent, has_config_items ? "," : "")
+                        continue
+                    }
+                    print lines[i]
+                }
+                exit
+            }
+
+            if (root_end) {
+                has_top_items = 0
+                for (i = 1; i < root_end; i++) {
+                    if (lines[i] !~ /^[[:space:]]*$/ && lines[i] !~ /^[[:space:]]*\{[[:space:]]*$/) {
+                        has_top_items = 1
+                    }
+                }
+                for (i = 1; i <= NR; i++) {
+                    if (i == 1 && lines[i] ~ /^[[:space:]]*\{[[:space:]]*$/) {
+                        print lines[i]
+                        print "  \"config\": {"
+                        print_before_line("    ", "")
+                        print "  }" (has_top_items ? "," : "")
+                        continue
+                    }
+                    print lines[i]
+                }
+                exit
+            }
+
+            for (i = 1; i <= NR; i++) {
+                print lines[i]
+            }
+        }
+    ' "$file"
+}
+
+remove_vlt_before_config() {
+    local file="$1"
+
+    write_file_from_command "$file" awk '
+        function strip_comma(line) {
+            sub(/,[[:space:]]*$/, "", line)
+            return line
+        }
+        {
+            lines[NR] = $0
+            if (!config_start && match($0, /^[[:space:]]*"config"[[:space:]]*:[[:space:]]*\{/)) {
+                config_start = NR
+                config_indent = substr($0, 1, index($0, "\"") - 1)
+            } else if (config_start && !config_end && NR > config_start && $0 ~ "^" config_indent "}[,]?[[:space:]]*$") {
+                config_end = NR
+            }
+            if (config_start && !config_end && NR > config_start && $0 ~ /^[[:space:]]*"before"[[:space:]]*:/) {
+                before_line = NR
+            }
+        }
+        END {
+            if (!before_line) {
+                for (i = 1; i <= NR; i++) {
+                    print lines[i]
+                }
+                exit
+            }
+
+            has_other_config = 0
+            for (i = config_start + 1; i < config_end; i++) {
+                if (i != before_line && lines[i] !~ /^[[:space:]]*$/) {
+                    has_other_config = 1
+                }
+            }
+
+            has_other_top = 0
+            for (i = 1; i <= NR; i++) {
+                if (i >= config_start && i <= config_end) {
+                    continue
+                }
+                if (lines[i] !~ /^[[:space:]]*[{}][,]?[[:space:]]*$/ && lines[i] !~ /^[[:space:]]*$/) {
+                    has_other_top = 1
+                }
+            }
+
+            if (!has_other_config && !has_other_top) {
+                exit
+            }
+
+            if (!has_other_config) {
+                prev = 0
+                following = 0
+                for (i = config_start - 1; i >= 1; i--) {
+                    if (lines[i] !~ /^[[:space:]]*$/ && lines[i] !~ /^[[:space:]]*\{[[:space:]]*$/) {
+                        prev = i
+                        break
+                    }
+                }
+                for (i = config_end + 1; i <= NR; i++) {
+                    if (lines[i] !~ /^[[:space:]]*$/ && lines[i] !~ /^[[:space:]]*}[,]?[[:space:]]*$/) {
+                        following = i
+                        break
+                    }
+                }
+                if (prev && !following) {
+                    lines[prev] = strip_comma(lines[prev])
+                }
+                for (i = 1; i <= NR; i++) {
+                    if (i >= config_start && i <= config_end) {
+                        continue
+                    }
+                    print lines[i]
+                }
+                exit
+            }
+
+            prev = 0
+            following = 0
+            for (i = config_start + 1; i < before_line; i++) {
+                if (lines[i] !~ /^[[:space:]]*$/) {
+                    prev = i
+                }
+            }
+            for (i = before_line + 1; i < config_end; i++) {
+                if (lines[i] !~ /^[[:space:]]*$/) {
+                    following = i
+                    break
+                }
+            }
+            if (prev && !following) {
+                lines[prev] = strip_comma(lines[prev])
+            }
+            for (i = 1; i <= NR; i++) {
+                if (i == before_line) {
+                    continue
+                }
+                print lines[i]
+            }
+        }
+    ' "$file"
 }
 
 toml_array() {
@@ -999,6 +1300,17 @@ run_preflight_checks() {
 
     ensure_tool_version "pnpm" "$required_pnpm_version" "$pnpm_feature" || status=1
 
+    installed=$(lookup_detected_tool_field "pnpm" installed)
+    version=$(lookup_detected_tool_field "pnpm" version)
+    path=$(lookup_detected_tool_field "pnpm" path)
+    if [[ "$installed" == "yes" && -n "$version" && "$version" != "unknown" ]]; then
+        if version_gte "$version" "11.0.0"; then
+            record_preflight_ok "pnpm config" "$installed" "$version" "$path" "global settings use config.yaml"
+        else
+            record_preflight_ok "pnpm config" "$installed" "$version" "$path" "global settings use legacy rc"
+        fi
+    fi
+
     installed=$(lookup_detected_tool_field "bun" installed)
     version=$(lookup_detected_tool_field "bun" version)
     path=$(lookup_detected_tool_field "bun" path)
@@ -1006,6 +1318,15 @@ run_preflight_checks() {
         record_preflight_ok "bun" "$installed" "$version" "$path" "minimumReleaseAge supported; no documented minimum version"
     else
         record_preflight_skip "bun" "$installed" "$version" "$path" "not installed; config can still be written"
+    fi
+
+    installed=$(lookup_detected_tool_field "vlt" installed)
+    version=$(lookup_detected_tool_field "vlt" version)
+    path=$(lookup_detected_tool_field "vlt" path)
+    if [[ "$installed" == "yes" ]]; then
+        record_preflight_ok "vlt" "$installed" "$version" "$path" "before config supported; no documented minimum version"
+    else
+        record_preflight_skip "vlt" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
 
     installed=$(lookup_detected_tool_field "yarn v1" installed)
@@ -1050,6 +1371,8 @@ run_remove_tools() {
             bun) remove_bun ;;
             yarn-classic) remove_yarn_classic ;;
             yarn-berry) remove_yarn_berry ;;
+            vlt) remove_vlt ;;
+            vlt-cron) remove_cron_vlt ;;
         esac
     done
 }
@@ -1064,6 +1387,7 @@ print_config_files() {
     echo "  bun            $(tool_config_path bun)"
     echo "  yarn v1        $(tool_config_path yarn-classic)"
     echo "  yarn v2+       $(tool_config_path yarn-berry)"
+    echo "  vlt            $(tool_config_path vlt)"
     echo ""
 }
 
@@ -1160,6 +1484,7 @@ setup_uv() {
 }
 
 CRON_MARKER="# set-minimum-package-release-age: uv exclude-newer"
+VLT_CRON_MARKER="# set-minimum-package-release-age: vlt before"
 
 setup_cron_uv() {
     local uv_conf="$HOME/.config/uv/uv.toml"
@@ -1182,6 +1507,29 @@ setup_cron_uv() {
     else
         emit_config_status "uv cron" "uv-cron" "FAIL" "could not install cron job"
         FAILED_TOOLS+=("cron-uv")
+    fi
+}
+
+setup_cron_vlt() {
+    local min_age="${MIN_AGE_DAYS}"
+
+    if crontab -l 2>/dev/null | grep -qF "$VLT_CRON_MARKER"; then
+        emit_config_status "vlt cron" "vlt-cron" "ok" "daily job installed"
+        SKIPPED_TOOLS+=("cron-vlt")
+        return 0
+    fi
+
+    local cron_cmd
+    cron_cmd=$(platform_build_vlt_cron_command "$min_age" "$VLT_CONFIG_PATH")
+
+    ( crontab -l 2>/dev/null || true; echo "$cron_cmd" ) | crontab -
+
+    if crontab -l 2>/dev/null | grep -qF "$VLT_CRON_MARKER"; then
+        emit_config_status "vlt cron" "vlt-cron" "added" "daily at midnight (crontab -l to verify)"
+        UPDATED_TOOLS+=("cron-vlt")
+    else
+        emit_config_status "vlt cron" "vlt-cron" "FAIL" "could not install cron job"
+        FAILED_TOOLS+=("cron-vlt")
     fi
 }
 
@@ -1217,48 +1565,93 @@ setup_npm() {
 }
 
 setup_pnpm() {
+    local pnpm_config
     local min_age_minutes=$(( MIN_AGE_DAYS * 1440 ))
-    local desired_line="minimum-release-age=${min_age_minutes}"
-    local desired_exceptions current_exceptions item detail status current
+    local desired_line desired_exceptions current_age current_exceptions item detail status current
 
-    ensure_file_exists "$PNPM_RC_PATH"
+    pnpm_config=$(pnpm_active_config_path)
+    ensure_file_exists "$pnpm_config"
+
+    if pnpm_active_config_is_yaml; then
+        desired_line="minimumReleaseAge: ${min_age_minutes}"
+    else
+        desired_line="minimum-release-age=${min_age_minutes}"
+    fi
+
+    current_age=$(current_lines_or_empty "$pnpm_config" '^minimumReleaseAge:[[:space:]]*')
+    if [[ -z "$current_age" ]]; then
+        current_age=$(current_lines_or_empty "$pnpm_config" '^minimum-release-age=')
+    fi
+
     desired_exceptions=""
     if [[ ${#PNPM_EXCEPTIONS[@]} -gt 0 ]]; then
-        for item in "${PNPM_EXCEPTIONS[@]}"; do
-            desired_exceptions+=$'minimum-release-age-exclude[]='
-            desired_exceptions+="$item"
-            desired_exceptions+=$'\n'
-        done
-        desired_exceptions=${desired_exceptions%$'\n'}
+        if pnpm_active_config_is_yaml; then
+            desired_exceptions="minimumReleaseAgeExclude: $(yaml_flow_array "${PNPM_EXCEPTIONS[@]}")"
+        else
+            for item in "${PNPM_EXCEPTIONS[@]}"; do
+                desired_exceptions+=$'minimum-release-age-exclude[]='
+                desired_exceptions+="$item"
+                desired_exceptions+=$'\n'
+            done
+            desired_exceptions=${desired_exceptions%$'\n'}
+        fi
     fi
-    current_exceptions=$(current_lines_or_empty "$PNPM_RC_PATH" '^minimum-release-age-exclude\[\]=')
 
-    if grep -q "^${desired_line}$" "$PNPM_RC_PATH" 2>/dev/null \
+    current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimumReleaseAgeExclude:')
+    if [[ -z "$current_exceptions" ]]; then
+        current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimum-release-age-exclude\[\]=')
+    fi
+
+    if grep -q "^${desired_line}$" "$pnpm_config" 2>/dev/null \
         && [[ "$current_exceptions" == "$desired_exceptions" ]]; then
-        emit_config_status "pnpm" "pnpm" "ok" "${desired_line}$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
+        emit_config_status "pnpm" "pnpm" "ok" "${desired_line} ($(pnpm_active_config_label))$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
         SKIPPED_TOOLS+=("pnpm")
         return 0
     fi
 
-    backup_if_exists "$PNPM_RC_PATH"
+    backup_if_exists "$pnpm_config"
 
     status="added"
-    detail="${desired_line}$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
-    if grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null; then
-        current=$(grep '^minimum-release-age=' "$PNPM_RC_PATH" | head -1 | sed 's/.*=//')
+    detail="${desired_line} ($(pnpm_active_config_label))$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
+    if [[ -n "$current_age" ]]; then
+        current=$(printf '%s\n' "$current_age" | head -1 | sed 's/^[^:=]*[:=] *//')
         status="updated"
-        detail="${current} --> ${min_age_minutes}$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
-    fi
-    replace_or_append_line "$PNPM_RC_PATH" '^minimum-release-age=' "$desired_line"
-
-    remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age-exclude\\[\\]='
-    if [[ ${#PNPM_EXCEPTIONS[@]} -gt 0 ]]; then
-        for item in "${PNPM_EXCEPTIONS[@]}"; do
-            printf 'minimum-release-age-exclude[]=%s\n' "$item" >> "$PNPM_RC_PATH"
-        done
+        detail="${current} --> ${min_age_minutes} ($(pnpm_active_config_label))$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
     fi
 
-    if verify_and_finalize "$PNPM_RC_PATH" "pnpm" 'minimum-release-age'; then
+    if pnpm_active_config_is_yaml; then
+        if [[ -f "$PNPM_RC_PATH" ]] \
+            && { grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null || grep -q '^minimum-release-age-exclude\[\]=' "$PNPM_RC_PATH" 2>/dev/null; }; then
+            backup_if_exists "$PNPM_RC_PATH"
+            remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age='
+            remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age-exclude\\[\\]='
+            strip_file_if_whitespace_only "$PNPM_RC_PATH"
+            if ! verify_file_changes "$PNPM_RC_PATH" 'minimum-release-age'; then
+                FAILED_TOOLS+=("pnpm")
+                emit_config_status "pnpm" "pnpm" "FAIL" "$detail"
+                return 0
+            fi
+            cleanup_empty_file "$PNPM_RC_PATH"
+        fi
+        upsert_yaml_scalar "$pnpm_config" "minimumReleaseAge" "$min_age_minutes"
+        if [[ ${#PNPM_EXCEPTIONS[@]} -gt 0 ]]; then
+            upsert_yaml_array "$pnpm_config" "minimumReleaseAgeExclude" "${PNPM_EXCEPTIONS[@]}"
+        else
+            remove_yaml_top_level_key "$pnpm_config" "minimumReleaseAgeExclude"
+        fi
+        remove_matching_lines "$pnpm_config" '^minimum-release-age='
+        remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude\\[\\]='
+    else
+        replace_or_append_line "$pnpm_config" '^minimum-release-age=' "$desired_line"
+        remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude\\[\\]='
+        if [[ ${#PNPM_EXCEPTIONS[@]} -gt 0 ]]; then
+            for item in "${PNPM_EXCEPTIONS[@]}"; do
+                printf 'minimum-release-age-exclude[]=%s\n' "$item" >> "$pnpm_config"
+            done
+        fi
+    fi
+
+    if verify_and_finalize "$pnpm_config" "pnpm" 'minimumReleaseAge\|minimum-release-age'; then
         emit_config_status "pnpm" "pnpm" "$status" "$detail"
     else
         emit_config_status "pnpm" "pnpm" "FAIL" "$detail"
@@ -1388,6 +1781,38 @@ setup_yarn_berry() {
     fi
 }
 
+setup_vlt() {
+    local before_date desired_line current detail status
+
+    before_date=$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")
+    desired_line="\"before\": \"${before_date}\""
+    detail="before = ${before_date} (${MIN_AGE_DAYS}d window)"
+
+    ensure_file_exists "$VLT_CONFIG_PATH"
+
+    if grep -q "^[[:space:]]*${desired_line}[,]*[[:space:]]*$" "$VLT_CONFIG_PATH" 2>/dev/null; then
+        emit_config_status "vlt" "vlt" "ok" "$detail"
+        SKIPPED_TOOLS+=("vlt")
+        return 0
+    fi
+
+    backup_if_exists "$VLT_CONFIG_PATH"
+
+    status="added"
+    if grep -q '^[[:space:]]*"before"[[:space:]]*:' "$VLT_CONFIG_PATH" 2>/dev/null; then
+        current=$(grep '^[[:space:]]*"before"[[:space:]]*:' "$VLT_CONFIG_PATH" | head -1 | sed 's/.*: *"//; s/".*//')
+        status="updated"
+        detail="${current} --> ${before_date} (${MIN_AGE_DAYS}d window)"
+    fi
+
+    upsert_vlt_before_config "$VLT_CONFIG_PATH" "$before_date"
+    if verify_and_finalize "$VLT_CONFIG_PATH" "vlt" '"before"\|"config"\|^[{}][,]*$'; then
+        emit_config_status "vlt" "vlt" "$status" "$detail"
+    else
+        emit_config_status "vlt" "vlt" "FAIL" "$detail"
+    fi
+}
+
 remove_pip() {
     local pip_conf="$HOME/.config/pip/pip.conf"
     local current detail
@@ -1476,6 +1901,30 @@ remove_cron_uv() {
     fi
 }
 
+remove_cron_vlt() {
+    if ! crontab -l 2>/dev/null | grep -qF "$VLT_CRON_MARKER"; then
+        emit_config_status "vlt cron" "vlt-cron" "ok" "cron job not present"
+        SKIPPED_TOOLS+=("cron-vlt")
+        return 0
+    fi
+
+    local new_crontab
+    new_crontab=$(crontab -l 2>/dev/null | grep -vF "$VLT_CRON_MARKER" || true)
+    if [[ -n "$new_crontab" ]]; then
+        echo "$new_crontab" | crontab -
+    else
+        crontab -r 2>/dev/null || true
+    fi
+
+    if ! crontab -l 2>/dev/null | grep -qF "$VLT_CRON_MARKER"; then
+        emit_config_status "vlt cron" "vlt-cron" "removed" "daily cron job"
+        UPDATED_TOOLS+=("cron-vlt")
+    else
+        emit_config_status "vlt cron" "vlt-cron" "FAIL" "could not remove cron job"
+        FAILED_TOOLS+=("cron-vlt")
+    fi
+}
+
 remove_npm() {
     local npmrc="$HOME/.npmrc"
     local current
@@ -1501,24 +1950,31 @@ remove_npm() {
 }
 
 remove_pnpm() {
-    if ! grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null \
-        && ! grep -q '^minimum-release-age-exclude\[\]=' "$PNPM_RC_PATH" 2>/dev/null; then
+    local pnpm_config
+    pnpm_config=$(pnpm_active_config_path)
+
+    if ! grep -q '^minimumReleaseAge:' "$pnpm_config" 2>/dev/null \
+        && ! grep -q '^minimumReleaseAgeExclude:' "$pnpm_config" 2>/dev/null \
+        && ! grep -q '^minimum-release-age=' "$pnpm_config" 2>/dev/null \
+        && ! grep -q '^minimum-release-age-exclude\[\]=' "$pnpm_config" 2>/dev/null; then
         emit_config_status "pnpm" "pnpm" "ok" "minimum-release-age settings not present"
         SKIPPED_TOOLS+=("pnpm")
         return 0
     fi
 
-    backup_if_exists "$PNPM_RC_PATH"
-    remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age='
-    remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age-exclude\\[\\]='
+    backup_if_exists "$pnpm_config"
+    remove_yaml_top_level_key "$pnpm_config" "minimumReleaseAge"
+    remove_yaml_top_level_key "$pnpm_config" "minimumReleaseAgeExclude"
+    remove_matching_lines "$pnpm_config" '^minimum-release-age='
+    remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude\\[\\]='
 
-    strip_file_if_whitespace_only "$PNPM_RC_PATH"
-    if verify_and_finalize "$PNPM_RC_PATH" "pnpm" 'minimum-release-age'; then
-        emit_config_status "pnpm" "pnpm" "removed" "minimum-release-age settings"
+    strip_file_if_whitespace_only "$pnpm_config"
+    if verify_and_finalize "$pnpm_config" "pnpm" 'minimumReleaseAge\|minimum-release-age'; then
+        emit_config_status "pnpm" "pnpm" "removed" "minimum-release-age settings ($(pnpm_active_config_label))"
     else
         emit_config_status "pnpm" "pnpm" "FAIL" "minimum-release-age settings"
     fi
-    cleanup_empty_file "$PNPM_RC_PATH"
+    cleanup_empty_file "$pnpm_config"
 }
 
 remove_bun() {
@@ -1595,13 +2051,39 @@ remove_yarn_berry() {
     cleanup_empty_file "$yarnrc_yml"
 }
 
+remove_vlt() {
+    local current detail
+
+    if ! grep -q '^[[:space:]]*"before"[[:space:]]*:' "$VLT_CONFIG_PATH" 2>/dev/null; then
+        emit_config_status "vlt" "vlt" "ok" "before setting not present"
+        SKIPPED_TOOLS+=("vlt")
+        return 0
+    fi
+
+    current=$(grep '^[[:space:]]*"before"[[:space:]]*:' "$VLT_CONFIG_PATH" | head -1 | sed 's/.*: *"//; s/".*//')
+    detail="before = ${current}"
+
+    backup_if_exists "$VLT_CONFIG_PATH"
+    remove_vlt_before_config "$VLT_CONFIG_PATH"
+
+    strip_file_if_whitespace_only "$VLT_CONFIG_PATH"
+    if verify_and_finalize "$VLT_CONFIG_PATH" "vlt" '"before"\|"config"\|^[{}][,]*$'; then
+        emit_config_status "vlt" "vlt" "removed" "$detail"
+    else
+        emit_config_status "vlt" "vlt" "FAIL" "$detail"
+    fi
+    cleanup_empty_file "$VLT_CONFIG_PATH"
+}
+
 validate_configs() {
     local pip_conf="$HOME/.config/pip/pip.conf"
     local uv_conf="$HOME/.config/uv/uv.toml"
     local npmrc="$HOME/.npmrc"
+    local pnpm_config
     local bunfig="$HOME/.bunfig.toml"
     local yarnrc="$HOME/.yarnrc"
     local yarnrc_yml="$HOME/.yarnrc.yml"
+    local expected_vlt_before="\"before\": \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
     local expected_pip_line="uploaded-prior-to = $(pip_cutoff_timestamp)"
     local expected_uv_date="exclude-newer = \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
     local expected_pnpm_age="minimum-release-age=$(( MIN_AGE_DAYS * 1440 ))"
@@ -1614,6 +2096,12 @@ validate_configs() {
     local expected_pnpm_exceptions=""
     local current_exceptions item
 
+    pnpm_config=$(pnpm_active_config_path)
+
+    if pnpm_active_config_is_yaml; then
+        expected_pnpm_age="minimumReleaseAge: $(( MIN_AGE_DAYS * 1440 ))"
+    fi
+
     if [[ ${#UV_EXCEPTIONS[@]} -gt 0 ]]; then
         expected_uv_exceptions=$(build_uv_exception_line)
     fi
@@ -1624,12 +2112,16 @@ validate_configs() {
         expected_yarn_exceptions="npmPreapprovedPackages: $(yaml_flow_array "${YARN_EXCEPTIONS[@]}")"
     fi
     if [[ ${#PNPM_EXCEPTIONS[@]} -gt 0 ]]; then
-        for item in "${PNPM_EXCEPTIONS[@]}"; do
-            expected_pnpm_exceptions+=$'minimum-release-age-exclude[]='
-            expected_pnpm_exceptions+="$item"
-            expected_pnpm_exceptions+=$'\n'
-        done
-        expected_pnpm_exceptions=${expected_pnpm_exceptions%$'\n'}
+        if pnpm_active_config_is_yaml; then
+            expected_pnpm_exceptions="minimumReleaseAgeExclude: $(yaml_flow_array "${PNPM_EXCEPTIONS[@]}")"
+        else
+            for item in "${PNPM_EXCEPTIONS[@]}"; do
+                expected_pnpm_exceptions+=$'minimum-release-age-exclude[]='
+                expected_pnpm_exceptions+="$item"
+                expected_pnpm_exceptions+=$'\n'
+            done
+            expected_pnpm_exceptions=${expected_pnpm_exceptions%$'\n'}
+        fi
     fi
 
     if [[ -f "$pip_conf" ]]; then
@@ -1665,9 +2157,15 @@ validate_configs() {
         record_validation_skip "npm" "config not present" "npm"
     fi
 
-    if [[ -f "$PNPM_RC_PATH" ]]; then
-        current_exceptions=$(current_lines_or_empty "$PNPM_RC_PATH" '^minimum-release-age-exclude\[\]=')
-        if grep -Fqx "$expected_pnpm_age" "$PNPM_RC_PATH" 2>/dev/null \
+    if [[ -f "$PNPM_RC_PATH" && "$pnpm_config" != "$PNPM_RC_PATH" ]] \
+        && { grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null || grep -q '^minimum-release-age-exclude\[\]=' "$PNPM_RC_PATH" 2>/dev/null; }; then
+        record_validation_fail "pnpm" "legacy rc still has minimum-release-age settings" "pnpm"
+    elif [[ -f "$pnpm_config" ]]; then
+        current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimumReleaseAgeExclude:')
+        if [[ -z "$current_exceptions" ]]; then
+            current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimum-release-age-exclude\[\]=')
+        fi
+        if grep -Fqx "$expected_pnpm_age" "$pnpm_config" 2>/dev/null \
             && [[ "$current_exceptions" == "$expected_pnpm_exceptions" ]]; then
             record_validation_ok "pnpm" "$expected_pnpm_age" "pnpm"
         else
@@ -1710,10 +2208,25 @@ validate_configs() {
     else
         record_validation_skip "yarn v2+" "config not present" "yarn-berry"
     fi
+
+    if [[ -f "$VLT_CONFIG_PATH" ]]; then
+        if grep -Fq "$expected_vlt_before" "$VLT_CONFIG_PATH" 2>/dev/null; then
+            record_validation_ok "vlt" "before matches" "vlt"
+        else
+            record_validation_fail "vlt" "before setting does not match" "vlt"
+        fi
+    else
+        record_validation_skip "vlt" "config not present" "vlt"
+    fi
 }
 
 main() {
     parse_args "$@"
+
+    if [[ "${SET_MINIMUM_PACKAGE_RELEASE_AGE_REFRESH_VLT:-}" == "1" ]]; then
+        setup_vlt
+        return
+    fi
 
     NORMAL_MODE_REPORTING=false
     RESULT_TOOL_KEYS=()
@@ -1738,7 +2251,7 @@ main() {
         printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
         print_separator
 
-        run_remove_tools pip uv uv-cron npm pnpm bun yarn-classic yarn-berry
+        run_remove_tools pip uv uv-cron npm pnpm bun yarn-classic yarn-berry vlt vlt-cron
 
         echo ""
         echo "  Summary"
@@ -1810,6 +2323,8 @@ main() {
     setup_bun
     setup_yarn_classic
     setup_yarn_berry
+    setup_vlt
+    setup_cron_vlt
 
     validate_configs
     print_results_table

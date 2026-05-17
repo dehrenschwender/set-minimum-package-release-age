@@ -19,14 +19,18 @@ prepare_scoped_remove_fixtures() {
     load_common_library
     parse_args 4 \
         --exception uv:setuptools=false \
+        --exception pnpm:webpack \
         --exception 'yarn-berry:@myorg/*' \
         --exception bun:typescript
     setup_pip
     setup_uv
     setup_cron_uv
+    setup_pnpm
     setup_bun
     setup_yarn_classic
     setup_yarn_berry
+    setup_vlt
+    setup_cron_vlt
 }
 
 test_usage() {
@@ -342,6 +346,27 @@ test_setup_remove_pnpm() {
     parse_args 7 --exception pnpm:webpack --exception 'pnpm:@myorg/*'
 
     setup_pnpm
+    assert_file_contains "$PNPM_CONFIG_PATH" "minimumReleaseAge: 10080"
+    assert_file_contains "$PNPM_CONFIG_PATH" "minimumReleaseAgeExclude: ['webpack', '@myorg/*']"
+
+    reset_status_arrays
+    setup_pnpm
+    assert_array_contains "pnpm" "${SKIPPED_TOOLS[@]-}"
+
+    reset_status_arrays
+    remove_pnpm
+    assert_not_exists "$PNPM_CONFIG_PATH"
+    cleanup_test_env
+}
+
+test_setup_remove_pnpm_legacy_rc() {
+    setup_test_env
+    load_common_library "Test" "$HOME/.config/pnpm/rc"
+    PNPM_CONFIG_PATH="$HOME/.config/pnpm/config.yaml"
+    parse_args 7 --exception pnpm:webpack --exception 'pnpm:@myorg/*'
+    TOOL_DETECTION_CACHE="pnpm|yes|$TEST_BIN_DIR/pnpm|10.19.0"
+
+    setup_pnpm
     assert_file_contains "$PNPM_RC_PATH" "minimum-release-age=10080"
     assert_file_contains "$PNPM_RC_PATH" "minimum-release-age-exclude[]=webpack"
     assert_file_contains "$PNPM_RC_PATH" "minimum-release-age-exclude[]=@myorg/*"
@@ -353,6 +378,35 @@ test_setup_remove_pnpm() {
     reset_status_arrays
     remove_pnpm
     assert_not_exists "$PNPM_RC_PATH"
+    cleanup_test_env
+}
+
+test_setup_remove_vlt() {
+    setup_test_env
+    install_fake_crontab
+    load_common_library
+    parse_args 5
+
+    setup_vlt
+    assert_file_contains "$VLT_CONFIG_PATH" '"config": {'
+    assert_file_contains "$VLT_CONFIG_PATH" '"before": "2026-03-29T00:00:00Z"'
+
+    reset_status_arrays
+    setup_vlt
+    assert_array_contains "vlt" "${SKIPPED_TOOLS[@]-}"
+
+    reset_status_arrays
+    setup_cron_vlt
+    assert_exists "$TEST_CRONTAB_FILE"
+    assert_file_contains "$TEST_CRONTAB_FILE" "$VLT_CRON_MARKER"
+
+    reset_status_arrays
+    remove_vlt
+    assert_not_exists "$VLT_CONFIG_PATH"
+
+    reset_status_arrays
+    remove_cron_vlt
+    assert_array_contains "cron-vlt" "${UPDATED_TOOLS[@]-}"
     cleanup_test_env
 }
 
@@ -440,6 +494,7 @@ test_validate_configs() {
     setup_bun
     setup_yarn_classic
     setup_yarn_berry
+    setup_vlt
 
     validate_configs
     assert_array_contains "pip" "${VALIDATED_TOOLS[@]-}"
@@ -449,6 +504,7 @@ test_validate_configs() {
     assert_array_contains "bun" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "yarn-classic" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "yarn-berry" "${VALIDATED_TOOLS[@]-}"
+    assert_array_contains "vlt" "${VALIDATED_TOOLS[@]-}"
 
     cleanup_test_env
 
@@ -473,6 +529,7 @@ test_print_tool_overview_yarn_v1() {
     assert_contains "$output" "$TEST_BIN_DIR/pip3"
     assert_contains "$output" "npm              yes        11.10.0"
     assert_contains "$output" "bun              no         n/a          not found"
+    assert_contains "$output" "vlt              yes        0.0.0"
     assert_contains "$output" "yarn v1          yes        1.22.22      $expected_yarn_path"
     assert_contains "$output" "yarn v2+         no         1.22.22      $expected_yarn_path"
     cleanup_test_env
@@ -618,8 +675,10 @@ test_main_output_includes_readiness_and_results() {
     assert_contains "$output" "pnpm             yes        10.19.0"
     assert_contains "$output" "minimum-release-age requires >= 10.16.0"
     assert_contains "$output" "uv cron          added      --"
+    assert_contains "$output" "vlt cron         added      --"
     assert_contains "$output" "uploaded-prior-to = 2026-03-29T00:00:00Z (4d window) | uploaded-prior-to matches"
     assert_contains "$output" "exclude-newer = \"2026-03-29T00:00:00Z\"; exceptions=1 | exclude-newer settings match"
+    assert_contains "$output" "before = 2026-03-29T00:00:00Z (4d window) | before matches"
     assert_before "$output" "Tool readiness" "Results"
     [[ "$output" != *"Configuration"* ]] || fail "did not expect Configuration section"
     [[ "$output" != *"Validation"* ]] || fail "did not expect Validation section"
@@ -691,7 +750,9 @@ test_scoped_remove_only_uv_cron() {
 
     main --remove-tool uv-cron >/dev/null
 
-    assert_not_exists "$TEST_CRONTAB_FILE"
+    assert_exists "$TEST_CRONTAB_FILE"
+    assert_file_not_contains "$TEST_CRONTAB_FILE" "$CRON_MARKER"
+    assert_file_contains "$TEST_CRONTAB_FILE" "$VLT_CRON_MARKER"
     assert_exists "$HOME/.config/uv/uv.toml"
     cleanup_test_env
 }
@@ -704,7 +765,9 @@ test_scoped_remove_uv_and_uv_cron() {
     main --remove-tool uv --remove-tool uv-cron >/dev/null
 
     assert_not_exists "$HOME/.config/uv/uv.toml"
-    assert_not_exists "$TEST_CRONTAB_FILE"
+    assert_exists "$TEST_CRONTAB_FILE"
+    assert_file_not_contains "$TEST_CRONTAB_FILE" "$CRON_MARKER"
+    assert_file_contains "$TEST_CRONTAB_FILE" "$VLT_CRON_MARKER"
     cleanup_test_env
 }
 
@@ -720,6 +783,30 @@ test_scoped_remove_only_yarn_berry() {
     cleanup_test_env
 }
 
+test_scoped_remove_only_vlt() {
+    setup_test_env
+    prepare_scoped_remove_fixtures
+    install_fake_detection_tools "4.10.0"
+
+    main --remove-tool vlt >/dev/null
+
+    assert_not_exists "$VLT_CONFIG_PATH"
+    assert_exists "$TEST_CRONTAB_FILE"
+    cleanup_test_env
+}
+
+test_scoped_remove_only_vlt_cron() {
+    setup_test_env
+    prepare_scoped_remove_fixtures
+    install_fake_detection_tools "4.10.0"
+
+    main --remove-tool vlt-cron >/dev/null
+
+    assert_not_exists "$TEST_CRONTAB_FILE"
+    assert_exists "$VLT_CONFIG_PATH"
+    cleanup_test_env
+}
+
 run_test "usage" test_usage || true
 run_test "parse_args_success" test_parse_args_success || true
 run_test "parse_args_failures" test_parse_args_failures || true
@@ -730,6 +817,8 @@ run_test "setup_remove_pip" test_setup_remove_pip || true
 run_test "setup_remove_uv" test_setup_remove_uv || true
 run_test "setup_remove_npm" test_setup_remove_npm || true
 run_test "setup_remove_pnpm" test_setup_remove_pnpm || true
+run_test "setup_remove_pnpm_legacy_rc" test_setup_remove_pnpm_legacy_rc || true
+run_test "setup_remove_vlt" test_setup_remove_vlt || true
 run_test "setup_remove_bun" test_setup_remove_bun || true
 run_test "setup_remove_yarn_classic" test_setup_remove_yarn_classic || true
 run_test "setup_remove_yarn_berry" test_setup_remove_yarn_berry || true
@@ -750,5 +839,7 @@ run_test "scoped_remove_only_uv" test_scoped_remove_only_uv || true
 run_test "scoped_remove_only_uv_cron" test_scoped_remove_only_uv_cron || true
 run_test "scoped_remove_uv_and_uv_cron" test_scoped_remove_uv_and_uv_cron || true
 run_test "scoped_remove_only_yarn_berry" test_scoped_remove_only_yarn_berry || true
+run_test "scoped_remove_only_vlt" test_scoped_remove_only_vlt || true
+run_test "scoped_remove_only_vlt_cron" test_scoped_remove_only_vlt_cron || true
 
 finish_tests
