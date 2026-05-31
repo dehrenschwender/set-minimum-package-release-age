@@ -21,12 +21,14 @@ prepare_scoped_remove_fixtures() {
         --exception uv:setuptools=false \
         --exception pnpm:webpack \
         --exception 'yarn-berry:@myorg/*' \
-        --exception bun:typescript
+        --exception bun:typescript \
+        --exception deno:npm:chalk
     setup_pip
     setup_uv
     setup_cron_uv
     setup_pnpm
     setup_bun
+    setup_deno
     setup_yarn_classic
     setup_yarn_berry
     setup_vlt
@@ -62,11 +64,13 @@ test_parse_args_success() {
         --exception uv:setuptools=false \
         --exception pnpm:webpack \
         --exception bun:typescript \
+        --exception deno:npm:chalk \
         --exception 'yarn-berry:@myorg/*'
     assert_eq "14" "$MIN_AGE_DAYS"
     assert_eq "1" "${#UV_EXCEPTIONS[@]}"
     assert_eq "1" "${#PNPM_EXCEPTIONS[@]}"
     assert_eq "1" "${#BUN_EXCEPTIONS[@]}"
+    assert_eq "1" "${#DENO_EXCEPTIONS[@]}"
     assert_eq "1" "${#YARN_EXCEPTIONS[@]}"
     assert_eq "setuptools=false" "${UV_EXCEPTIONS[0]}"
 
@@ -167,6 +171,13 @@ test_parse_args_failures() {
     set -e
     assert_eq 1 "$status"
     assert_contains "$output" "--exception must use the format"
+
+    set +e
+    output=$( ( parse_args --exception deno:chalk ) 2>&1 )
+    status=$?
+    set -e
+    assert_eq 1 "$status"
+    assert_contains "$output" "deno exceptions must start with npm: or jsr:"
 
     set +e
     output=$( ( parse_args --remove-tool wat ) 2>&1 )
@@ -438,6 +449,54 @@ test_setup_remove_bun() {
     cleanup_test_env
 }
 
+test_setup_remove_deno() {
+    setup_test_env
+    load_common_library
+    parse_args 6 --exception deno:npm:chalk --exception deno:jsr:@std/assert
+
+    local deno_config="$HOME/deno.json"
+    printf '{\n  "imports": {}\n}\n' > "$deno_config"
+    setup_deno
+    assert_file_contains "$deno_config" '"minimumDependencyAge": {'
+    assert_file_contains "$deno_config" '"age": 8640'
+    assert_file_contains "$deno_config" '"exclude": ["npm:chalk", "jsr:@std/assert"]'
+    assert_file_contains "$deno_config" '"imports": {}'
+
+    reset_status_arrays
+    setup_deno
+    assert_array_contains "deno" "${SKIPPED_TOOLS[@]-}"
+
+    reset_status_arrays
+    remove_deno
+    assert_file_contains "$deno_config" '"imports": {}'
+    assert_file_not_contains "$deno_config" 'minimumDependencyAge'
+
+    printf '{\n  "imports": {},\n  "minimumDependencyAge": 60\n}\n' > "$deno_config"
+    reset_status_arrays
+    setup_deno
+    assert_file_contains "$deno_config" '"minimumDependencyAge": {'
+    assert_file_contains "$deno_config" '"imports": {}'
+    [[ " ${FAILED_TOOLS[*]-} " != *" deno "* ]] || fail "expected deno setup to succeed"
+
+    printf '{\n  "imports": {},\n  "minimumDependencyAge": 8640\n}\n' > "$deno_config"
+    reset_status_arrays
+    remove_deno
+    assert_file_contains "$deno_config" '"imports": {}'
+    assert_file_not_contains "$deno_config" 'minimumDependencyAge'
+
+    printf '{"imports":{}}\n' > "$deno_config"
+    reset_status_arrays
+    setup_deno
+    assert_array_contains "deno" "${FAILED_TOOLS[@]-}"
+    assert_file_not_contains "$deno_config" 'minimumDependencyAge'
+
+    printf '{\n  "minimumDependencyAge": 8640\n}\n' > "$deno_config"
+    reset_status_arrays
+    remove_deno
+    assert_not_exists "$deno_config"
+    cleanup_test_env
+}
+
 test_setup_remove_yarn_classic() {
     setup_test_env
     load_common_library
@@ -484,6 +543,7 @@ test_validate_configs() {
         --exception uv:setuptools=false \
         --exception pnpm:webpack \
         --exception bun:typescript \
+        --exception deno:npm:chalk \
         --exception 'yarn-berry:@myorg/*'
     install_fake_crontab
 
@@ -492,6 +552,7 @@ test_validate_configs() {
     setup_npm
     setup_pnpm
     setup_bun
+    setup_deno
     setup_yarn_classic
     setup_yarn_berry
     setup_vlt
@@ -502,6 +563,7 @@ test_validate_configs() {
     assert_array_contains "npm" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "pnpm" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "bun" "${VALIDATED_TOOLS[@]-}"
+    assert_array_contains "deno" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "yarn-classic" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "yarn-berry" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "vlt" "${VALIDATED_TOOLS[@]-}"
@@ -529,6 +591,7 @@ test_print_tool_overview_yarn_v1() {
     assert_contains "$output" "$TEST_BIN_DIR/pip3"
     assert_contains "$output" "npm              yes        11.10.0"
     assert_contains "$output" "bun              no         n/a          not found"
+    assert_contains "$output" "deno             yes        2.8.0"
     assert_contains "$output" "vlt              yes        0.0.0"
     assert_contains "$output" "yarn v1          yes        1.22.22      $expected_yarn_path"
     assert_contains "$output" "yarn v2+         no         1.22.22      $expected_yarn_path"
@@ -663,6 +726,7 @@ test_main_output_includes_readiness_and_results() {
         --exception uv:setuptools=false \
         --exception pnpm:webpack \
         --exception bun:typescript \
+        --exception deno:npm:chalk \
         --exception 'yarn-berry:@myorg/*')
 
     assert_contains "$output" "minimum age: 4 days"
@@ -674,10 +738,13 @@ test_main_output_includes_readiness_and_results() {
     assert_contains "$output" "uploaded-prior-to requires >= 26.0"
     assert_contains "$output" "pnpm             yes        10.19.0"
     assert_contains "$output" "minimum-release-age requires >= 10.16.0"
+    assert_contains "$output" "deno             yes        2.8.0"
+    assert_contains "$output" "minimumDependencyAge supported; no documented minimum version"
     assert_contains "$output" "uv cron          added      --"
     assert_contains "$output" "vlt cron         added      --"
     assert_contains "$output" "uploaded-prior-to = 2026-03-29T00:00:00Z (4d window) | uploaded-prior-to matches"
     assert_contains "$output" "exclude-newer = \"2026-03-29T00:00:00Z\"; exceptions=1 | exclude-newer settings match"
+    assert_contains "$output" "minimumDependencyAge: 5760m; exceptions=1 | minimumDependencyAge matches"
     assert_contains "$output" "before = 2026-03-29T00:00:00Z (4d window) | before matches"
     assert_before "$output" "Tool readiness" "Results"
     [[ "$output" != *"Configuration"* ]] || fail "did not expect Configuration section"
@@ -783,6 +850,18 @@ test_scoped_remove_only_yarn_berry() {
     cleanup_test_env
 }
 
+test_scoped_remove_only_deno() {
+    setup_test_env
+    prepare_scoped_remove_fixtures
+    install_fake_detection_tools "4.10.0"
+
+    main --remove-tool deno >/dev/null
+
+    assert_not_exists "$HOME/deno.json"
+    assert_exists "$HOME/.bunfig.toml"
+    cleanup_test_env
+}
+
 test_scoped_remove_only_vlt() {
     setup_test_env
     prepare_scoped_remove_fixtures
@@ -820,6 +899,7 @@ run_test "setup_remove_pnpm" test_setup_remove_pnpm || true
 run_test "setup_remove_pnpm_legacy_rc" test_setup_remove_pnpm_legacy_rc || true
 run_test "setup_remove_vlt" test_setup_remove_vlt || true
 run_test "setup_remove_bun" test_setup_remove_bun || true
+run_test "setup_remove_deno" test_setup_remove_deno || true
 run_test "setup_remove_yarn_classic" test_setup_remove_yarn_classic || true
 run_test "setup_remove_yarn_berry" test_setup_remove_yarn_berry || true
 run_test "validate_configs" test_validate_configs || true
@@ -839,6 +919,7 @@ run_test "scoped_remove_only_uv" test_scoped_remove_only_uv || true
 run_test "scoped_remove_only_uv_cron" test_scoped_remove_only_uv_cron || true
 run_test "scoped_remove_uv_and_uv_cron" test_scoped_remove_uv_and_uv_cron || true
 run_test "scoped_remove_only_yarn_berry" test_scoped_remove_only_yarn_berry || true
+run_test "scoped_remove_only_deno" test_scoped_remove_only_deno || true
 run_test "scoped_remove_only_vlt" test_scoped_remove_only_vlt || true
 run_test "scoped_remove_only_vlt_cron" test_scoped_remove_only_vlt_cron || true
 

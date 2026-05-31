@@ -13,10 +13,12 @@ Supported tools:
 - `npm`
 - `pnpm`
 - `bun`
+- `deno`
 - `yarn classic (v1)` as a cache TTL workaround
 - `yarn berry (v2+)` with native age-gate config
+- `vlt`
 
-The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `pnpm`, `bun`, and Yarn Berry.
+The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `pnpm`, `bun`, `deno`, and Yarn Berry.
 
 ## Architecture
 
@@ -62,10 +64,12 @@ Validation is config-based for every supported tool. `validate_configs()` checks
 - `npm`
 - `pnpm`
 - `bun`
+- `deno`
 - `yarn classic (v1)`
 - `yarn berry (v2+)`
+- `vlt`
 
-This is intentional: it avoids relying on inconsistent CLI config getters and ensures `bun` is validated too.
+This is intentional: it avoids relying on inconsistent CLI config getters and ensures `bun` and `deno` are validated too.
 
 ## Test Layout
 

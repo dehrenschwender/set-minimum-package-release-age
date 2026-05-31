@@ -7,6 +7,7 @@ PLATFORM_NAME="${PLATFORM_NAME:-Unknown}"
 PNPM_CONFIG_PATH="${PNPM_CONFIG_PATH:-$HOME/.config/pnpm/config.yaml}"
 PNPM_RC_PATH="${PNPM_RC_PATH:-$HOME/.config/pnpm/rc}"
 VLT_CONFIG_PATH="${VLT_CONFIG_PATH:-$HOME/.config/vlt/vlt.json}"
+DENO_CONFIG_PATH="${DENO_CONFIG_PATH:-$HOME/deno.json}"
 
 REMOVE_MODE=false
 REMOVE_SCOPED_MODE=false
@@ -18,6 +19,7 @@ UV_EXCEPTIONS=()
 PNPM_EXCEPTIONS=()
 BUN_EXCEPTIONS=()
 YARN_EXCEPTIONS=()
+DENO_EXCEPTIONS=()
 TOOL_DETECTION_CACHE=""
 NORMAL_MODE_REPORTING=false
 RESULT_TOOL_KEYS=()
@@ -36,7 +38,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS] [DAYS]
 
-Set a minimum package release age across pip, uv, npm, pnpm, bun, yarn, and vlt.
+Set a minimum package release age across pip, uv, npm, pnpm, bun, deno, yarn, and vlt.
 
 Arguments:
   DAYS                    Minimum age in days (default: 7). Accepts "14" or "14d".
@@ -47,6 +49,7 @@ Options:
                           uv:<package>=<duration-or-rfc3339>
                           pnpm:<selector>
                           bun:<package>
+                          deno:<npm:package-or-jsr:package>
                           yarn-berry:<pattern>
   --remove                Remove all settings previously added by this script.
   --remove-tool TOOL      Remove settings only for a specific managed tool. May be provided
@@ -59,6 +62,7 @@ Examples:
   $(basename "$0") 1d                      # Set minimum age to 1 day
   $(basename "$0") --exception uv:foo=false 14
   $(basename "$0") --exception pnpm:webpack --exception bun:typescript
+  $(basename "$0") --exception deno:npm:chalk --exception deno:jsr:@std/assert
   $(basename "$0") --exception yarn-berry:'@myorg/*'
   $(basename "$0") --remove-tool uv --remove-tool uv-cron
   $(basename "$0") --remove                # Remove all settings
@@ -88,6 +92,7 @@ tool_config_path() {
         npm) printf '%s\n' "$HOME/.npmrc" ;;
         pnpm) pnpm_active_config_path ;;
         bun) printf '%s\n' "$HOME/.bunfig.toml" ;;
+        deno) printf '%s\n' "$DENO_CONFIG_PATH" ;;
         yarn-classic) printf '%s\n' "$HOME/.yarnrc" ;;
         yarn-berry) printf '%s\n' "$HOME/.yarnrc.yml" ;;
         vlt) printf '%s\n' "$VLT_CONFIG_PATH" ;;
@@ -98,7 +103,7 @@ tool_config_path() {
 
 tool_supports_native_exceptions() {
     case "$1" in
-        uv|pnpm|bun|yarn-berry) return 0 ;;
+        uv|pnpm|bun|deno|yarn-berry) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -137,6 +142,13 @@ parse_exception_spec() {
             fi
             BUN_EXCEPTIONS+=("$value")
             ;;
+        deno)
+            if [[ ! "$value" =~ ^(npm|jsr):.+$ ]]; then
+                echo "Error: deno exceptions must start with npm: or jsr:." >&2
+                exit 1
+            fi
+            DENO_EXCEPTIONS+=("$value")
+            ;;
         yarn-berry)
             if [[ -z "$value" ]]; then
                 echo "Error: yarn-berry exceptions require a package pattern." >&2
@@ -159,7 +171,7 @@ parse_remove_tool() {
     local tool="$1"
 
     case "$tool" in
-        pip|uv|uv-cron|npm|pnpm|bun|yarn-classic|yarn-berry|vlt|vlt-cron)
+        pip|uv|uv-cron|npm|pnpm|bun|deno|yarn-classic|yarn-berry|vlt|vlt-cron)
             ;;
         *)
             echo "Error: Unknown remove tool: $tool" >&2
@@ -182,6 +194,7 @@ parse_args() {
     PNPM_EXCEPTIONS=()
     BUN_EXCEPTIONS=()
     YARN_EXCEPTIONS=()
+    DENO_EXCEPTIONS=()
     TOOL_DETECTION_CACHE=""
 
     while [[ $# -gt 0 ]]; do
@@ -237,7 +250,7 @@ parse_args() {
     fi
 
     if [[ "$REMOVE_MODE" == true || "$REMOVE_SCOPED_MODE" == true ]]; then
-        if [[ ${#UV_EXCEPTIONS[@]} -gt 0 || ${#PNPM_EXCEPTIONS[@]} -gt 0 || ${#BUN_EXCEPTIONS[@]} -gt 0 || ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
+        if [[ ${#UV_EXCEPTIONS[@]} -gt 0 || ${#PNPM_EXCEPTIONS[@]} -gt 0 || ${#BUN_EXCEPTIONS[@]} -gt 0 || ${#DENO_EXCEPTIONS[@]} -gt 0 || ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
             echo "Error: removal modes cannot be combined with --exception." >&2
             exit 1
         fi
@@ -287,6 +300,7 @@ result_tool_display_name() {
         npm) printf '%s\n' "npm" ;;
         pnpm) printf '%s\n' "pnpm" ;;
         bun) printf '%s\n' "bun" ;;
+        deno) printf '%s\n' "deno" ;;
         yarn-classic) printf '%s\n' "yarn v1" ;;
         yarn-berry) printf '%s\n' "yarn v2+" ;;
         vlt) printf '%s\n' "vlt" ;;
@@ -296,11 +310,11 @@ result_tool_display_name() {
 }
 
 init_results_table() {
-    RESULT_TOOL_KEYS=(pip uv uv-cron npm pnpm bun yarn-classic yarn-berry vlt vlt-cron)
-    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- -- -- --)
-    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "" "" "")
-    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- -- -- --)
-    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "" "" "")
+    RESULT_TOOL_KEYS=(pip uv uv-cron npm pnpm bun deno yarn-classic yarn-berry vlt vlt-cron)
+    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- -- -- -- --)
+    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "" "" "" "")
+    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- -- -- -- --)
+    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "" "" "" "")
 }
 
 result_row_index() {
@@ -311,10 +325,11 @@ result_row_index() {
         npm) printf '%s\n' 3 ;;
         pnpm) printf '%s\n' 4 ;;
         bun) printf '%s\n' 5 ;;
-        yarn-classic) printf '%s\n' 6 ;;
-        yarn-berry) printf '%s\n' 7 ;;
-        vlt) printf '%s\n' 8 ;;
-        vlt-cron) printf '%s\n' 9 ;;
+        deno) printf '%s\n' 6 ;;
+        yarn-classic) printf '%s\n' 7 ;;
+        yarn-berry) printf '%s\n' 8 ;;
+        vlt) printf '%s\n' 9 ;;
+        vlt-cron) printf '%s\n' 10 ;;
         *) return 1 ;;
     esac
 }
@@ -506,6 +521,13 @@ detect_supported_tool_installations() {
         printf 'bun|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
     else
         printf 'bun|no|not found|n/a\n'
+    fi
+
+    if tool_path=$(resolve_tool_path_with_which "deno"); then
+        tool_version=$(detect_command_version "deno" "$tool_path")
+        printf 'deno|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
+    else
+        printf 'deno|no|not found|n/a\n'
     fi
 
     if tool_path=$(resolve_tool_path_with_which "vlt"); then
@@ -783,6 +805,83 @@ verify_and_finalize() {
     return 1
 }
 
+verify_deno_and_finalize() {
+    local file="$1"
+    local backup="${file}${BACKUP_SUFFIX}"
+
+    if [[ ! -f "$backup" ]]; then
+        UPDATED_TOOLS+=("deno")
+        return 0
+    fi
+
+    local diff_output
+    diff_output=$(diff "$backup" "$file" 2>/dev/null || true)
+
+    if [[ -z "$diff_output" ]]; then
+        rm -f "$backup"
+        UPDATED_TOOLS+=("deno")
+        return 0
+    fi
+
+    if echo "$diff_output" | awk '
+        /^[<>]/ {
+            direction = substr($0, 1, 1)
+            line = $0
+            sub(/^[<>] */, "", line)
+            if (line ~ /^$/) {
+                next
+            }
+            if (line ~ /minimumDependencyAge|"age"|"exclude"|^[[:space:]]*[{}][,]*[[:space:]]*$/) {
+                next
+            }
+
+            normalized = line
+            has_comma = normalized ~ /,[[:space:]]*$/
+            sub(/,[[:space:]]*$/, "", normalized)
+            if (normalized !~ /^[[:space:]]*"[^"]+"[[:space:]]*:/) {
+                bad = 1
+                next
+            }
+
+            keys[normalized] = 1
+            counts[normalized, direction, has_comma ? "comma" : "plain"]++
+        }
+        END {
+            for (key in keys) {
+                removed_comma = counts[key, "<", "comma"] + 0
+                removed_plain = counts[key, "<", "plain"] + 0
+                added_comma = counts[key, ">", "comma"] + 0
+                added_plain = counts[key, ">", "plain"] + 0
+                if (removed_comma != added_plain || removed_plain != added_comma) {
+                    bad = 1
+                }
+            }
+            exit bad ? 1 : 0
+        }
+    '; then
+        rm -f "$backup"
+        UPDATED_TOOLS+=("deno")
+        return 0
+    fi
+
+    print_status "" "ROLLBACK" "unexpected changes detected, restoring backup"
+    echo "$diff_output" | sed 's/^/                              /'
+    cp "$backup" "$file"
+    rm -f "$backup"
+    FAILED_TOOLS+=("deno")
+    return 1
+}
+
+restore_backup_if_exists() {
+    local file="$1"
+    local backup="${file}${BACKUP_SUFFIX}"
+
+    if [[ -f "$backup" ]]; then
+        cp "$backup" "$file"
+        rm -f "$backup"
+    fi
+}
+
 ensure_file_exists() {
     local file="$1"
     mkdir -p "$(dirname "$file")"
@@ -989,10 +1088,218 @@ json_quote() {
     printf '"%s"' "$value"
 }
 
+json_flow_array() {
+    local result="["
+    local index=0
+    local item
+    for item in "$@"; do
+        if [[ $index -gt 0 ]]; then
+            result+=", "
+        fi
+        result+="$(json_quote "$item")"
+        index=$((index + 1))
+    done
+    result+="]"
+    printf '%s' "$result"
+}
+
 shell_quote() {
     local value="$1"
     value=${value//\'/\'\\\'\'}
     printf "'%s'" "$value"
+}
+
+deno_min_age_minutes() {
+    printf '%s\n' "$(( MIN_AGE_DAYS * 1440 ))"
+}
+
+build_deno_minimum_dependency_age_config() {
+    local min_age_minutes
+    min_age_minutes=$(deno_min_age_minutes)
+
+    if [[ ${#DENO_EXCEPTIONS[@]} -eq 0 ]]; then
+        printf '  "minimumDependencyAge": %s\n' "$min_age_minutes"
+        return
+    fi
+
+    printf '  "minimumDependencyAge": {\n'
+    printf '    "age": %s,\n' "$min_age_minutes"
+    printf '    "exclude": %s\n' "$(json_flow_array "${DENO_EXCEPTIONS[@]}")"
+    printf '  }\n'
+}
+
+remove_deno_minimum_dependency_age_config() {
+    local file="$1"
+
+    write_file_from_command "$file" awk '
+        function scrub_strings(line, out) {
+            out = line
+            gsub(/"([^"\\]|\\.)*"/, "\"\"", out)
+            return out
+        }
+        function depth_delta(line, scrubbed, opens, closes) {
+            scrubbed = scrub_strings(line)
+            opens = gsub(/[\{\[]/, "{", scrubbed)
+            closes = gsub(/[\}\]]/, "}", scrubbed)
+            return opens - closes
+        }
+        {
+            if (!skip && $0 ~ /^[[:space:]]*"minimumDependencyAge"[[:space:]]*:/) {
+                skip = 1
+                depth = depth_delta($0)
+                if (depth <= 0) {
+                    skip = 0
+                }
+                next
+            }
+            if (skip) {
+                depth += depth_delta($0)
+                if (depth <= 0) {
+                    skip = 0
+                }
+                next
+            }
+            lines[++n] = $0
+        }
+        END {
+            has_content = 0
+            for (i = 1; i <= n; i++) {
+                if (lines[i] !~ /^[[:space:]]*[{}][,]?[[:space:]]*$/ && lines[i] !~ /^[[:space:]]*$/) {
+                    has_content = 1
+                }
+            }
+            if (!has_content) {
+                exit
+            }
+
+            root_end = 0
+            for (i = n; i >= 1; i--) {
+                if (lines[i] ~ /^[[:space:]]*}[[:space:]]*$/) {
+                    root_end = i
+                    break
+                }
+            }
+            if (root_end) {
+                for (i = root_end - 1; i >= 1; i--) {
+                    if (lines[i] !~ /^[[:space:]]*$/) {
+                        sub(/,[[:space:]]*$/, "", lines[i])
+                        break
+                    }
+                }
+            }
+            for (i = 1; i <= n; i++) {
+                print lines[i]
+            }
+        }
+    ' "$file"
+}
+
+current_deno_minimum_dependency_age_config() {
+    local file="$1"
+
+    awk '
+        function scrub_strings(line, out) {
+            out = line
+            gsub(/"([^"\\]|\\.)*"/, "\"\"", out)
+            return out
+        }
+        function depth_delta(line, scrubbed, opens, closes) {
+            scrubbed = scrub_strings(line)
+            opens = gsub(/[\{\[]/, "{", scrubbed)
+            closes = gsub(/[\}\]]/, "}", scrubbed)
+            return opens - closes
+        }
+        !capture && /^[[:space:]]*"minimumDependencyAge"[[:space:]]*:/ {
+            capture = 1
+            depth = 0
+        }
+        capture {
+            next_depth = depth + depth_delta($0)
+            line = $0
+            if (next_depth <= 0) {
+                sub(/,[[:space:]]*$/, "", line)
+            }
+            print line
+            depth = next_depth
+            if (depth <= 0) {
+                exit
+            }
+        }
+    ' "$file" 2>/dev/null || true
+}
+
+upsert_deno_minimum_dependency_age_config() {
+    local file="$1"
+    local desired_config="$2"
+    local desired_config_encoded
+
+    remove_deno_minimum_dependency_age_config "$file"
+    desired_config_encoded=${desired_config//$'\n'/__SET_MIN_AGE_NL__}
+
+    write_file_from_command "$file" awk -v desired_config="$desired_config_encoded" '
+        BEGIN {
+            desired_count = split(desired_config, desired, /__SET_MIN_AGE_NL__/)
+            if (desired_count > 0 && desired[desired_count] == "") {
+                desired_count--
+            }
+        }
+        {
+            lines[NR] = $0
+            if (!root_start && $0 ~ /^[[:space:]]*\{[[:space:]]*$/) {
+                root_start = NR
+            }
+            if ($0 ~ /^[[:space:]]*\}[[:space:]]*$/) {
+                root_end = NR
+            }
+        }
+        END {
+            if (NR == 0) {
+                print "{"
+                for (j = 1; j <= desired_count; j++) {
+                    print desired[j]
+                }
+                print "}"
+                exit
+            }
+
+            if (NR == 1 && lines[1] ~ /^[[:space:]]*\{[[:space:]]*\}[[:space:]]*$/) {
+                print "{"
+                for (j = 1; j <= desired_count; j++) {
+                    print desired[j]
+                }
+                print "}"
+                exit
+            }
+
+            if (!root_start || !root_end) {
+                for (i = 1; i <= NR; i++) {
+                    print lines[i]
+                }
+                exit
+            }
+
+            has_other = 0
+            for (i = root_start + 1; i < root_end; i++) {
+                if (lines[i] !~ /^[[:space:]]*$/) {
+                    has_other = 1
+                    break
+                }
+            }
+
+            for (i = 1; i <= NR; i++) {
+                print lines[i]
+                if (i == root_start) {
+                    for (j = 1; j <= desired_count; j++) {
+                        line = desired[j]
+                        if (has_other && j == desired_count) {
+                            line = line ","
+                        }
+                        print line
+                    }
+                }
+            }
+        }
+    ' "$file"
 }
 
 upsert_vlt_before_config() {
@@ -1320,6 +1627,15 @@ run_preflight_checks() {
         record_preflight_skip "bun" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
 
+    installed=$(lookup_detected_tool_field "deno" installed)
+    version=$(lookup_detected_tool_field "deno" version)
+    path=$(lookup_detected_tool_field "deno" path)
+    if [[ "$installed" == "yes" ]]; then
+        record_preflight_ok "deno" "$installed" "$version" "$path" "minimumDependencyAge supported; no documented minimum version"
+    else
+        record_preflight_skip "deno" "$installed" "$version" "$path" "not installed; config can still be written"
+    fi
+
     installed=$(lookup_detected_tool_field "vlt" installed)
     version=$(lookup_detected_tool_field "vlt" version)
     path=$(lookup_detected_tool_field "vlt" path)
@@ -1369,6 +1685,7 @@ run_remove_tools() {
             npm) remove_npm ;;
             pnpm) remove_pnpm ;;
             bun) remove_bun ;;
+            deno) remove_deno ;;
             yarn-classic) remove_yarn_classic ;;
             yarn-berry) remove_yarn_berry ;;
             vlt) remove_vlt ;;
@@ -1385,6 +1702,7 @@ print_config_files() {
     echo "  npm            $(tool_config_path npm)"
     echo "  pnpm           $(tool_config_path pnpm)"
     echo "  bun            $(tool_config_path bun)"
+    echo "  deno           $(tool_config_path deno)"
     echo "  yarn v1        $(tool_config_path yarn-classic)"
     echo "  yarn v2+       $(tool_config_path yarn-berry)"
     echo "  vlt            $(tool_config_path vlt)"
@@ -1705,6 +2023,49 @@ setup_bun() {
     fi
 }
 
+setup_deno() {
+    local deno_config="$DENO_CONFIG_PATH"
+    local min_age_minutes
+    local desired_config current_config detail status current
+
+    min_age_minutes=$(deno_min_age_minutes)
+    desired_config=$(build_deno_minimum_dependency_age_config)
+    detail="minimumDependencyAge: ${min_age_minutes}m$(exception_count_suffix "${#DENO_EXCEPTIONS[@]}" "exceptions")"
+
+    ensure_file_exists "$deno_config"
+    strip_file_if_whitespace_only "$deno_config"
+
+    current_config=$(current_deno_minimum_dependency_age_config "$deno_config")
+    if [[ "$current_config" == "$desired_config" ]]; then
+        emit_config_status "deno" "deno" "ok" "$detail"
+        SKIPPED_TOOLS+=("deno")
+        return 0
+    fi
+
+    backup_if_exists "$deno_config"
+
+    status="added"
+    if grep -q '^[[:space:]]*"minimumDependencyAge"[[:space:]]*:' "$deno_config" 2>/dev/null; then
+        current=$(grep '^[[:space:]]*"minimumDependencyAge"[[:space:]]*:' "$deno_config" | head -1 | sed 's/.*: *//; s/[",]//g')
+        status="updated"
+        detail="${current} --> ${min_age_minutes}m$(exception_count_suffix "${#DENO_EXCEPTIONS[@]}" "exceptions")"
+    fi
+
+    upsert_deno_minimum_dependency_age_config "$deno_config" "$desired_config"
+    if [[ "$(current_deno_minimum_dependency_age_config "$deno_config")" != "$desired_config" ]]; then
+        restore_backup_if_exists "$deno_config"
+        FAILED_TOOLS+=("deno")
+        emit_config_status "deno" "deno" "FAIL" "could not write minimumDependencyAge to deno.json"
+        return 0
+    fi
+
+    if verify_deno_and_finalize "$deno_config"; then
+        emit_config_status "deno" "deno" "$status" "$detail"
+    else
+        emit_config_status "deno" "deno" "FAIL" "$detail"
+    fi
+}
+
 setup_yarn_classic() {
     local yarnrc="$HOME/.yarnrc"
     local min_age_seconds=$(( MIN_AGE_DAYS * 86400 ))
@@ -2004,6 +2365,27 @@ remove_bun() {
     cleanup_empty_file "$bunfig"
 }
 
+remove_deno() {
+    local deno_config="$DENO_CONFIG_PATH"
+
+    if ! grep -q '^[[:space:]]*"minimumDependencyAge"[[:space:]]*:' "$deno_config" 2>/dev/null; then
+        emit_config_status "deno" "deno" "ok" "minimumDependencyAge not present"
+        SKIPPED_TOOLS+=("deno")
+        return 0
+    fi
+
+    backup_if_exists "$deno_config"
+    remove_deno_minimum_dependency_age_config "$deno_config"
+
+    strip_file_if_whitespace_only "$deno_config"
+    if verify_deno_and_finalize "$deno_config"; then
+        emit_config_status "deno" "deno" "removed" "minimumDependencyAge"
+    else
+        emit_config_status "deno" "deno" "FAIL" "minimumDependencyAge"
+    fi
+    cleanup_empty_file "$deno_config"
+}
+
 remove_yarn_classic() {
     local yarnrc="$HOME/.yarnrc"
     local current
@@ -2081,6 +2463,7 @@ validate_configs() {
     local npmrc="$HOME/.npmrc"
     local pnpm_config
     local bunfig="$HOME/.bunfig.toml"
+    local deno_config="$DENO_CONFIG_PATH"
     local yarnrc="$HOME/.yarnrc"
     local yarnrc_yml="$HOME/.yarnrc.yml"
     local expected_vlt_before="\"before\": \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
@@ -2088,6 +2471,7 @@ validate_configs() {
     local expected_uv_date="exclude-newer = \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
     local expected_pnpm_age="minimum-release-age=$(( MIN_AGE_DAYS * 1440 ))"
     local expected_bun_age="minimumReleaseAge = $(( MIN_AGE_DAYS * 86400 ))"
+    local expected_deno_config
     local expected_yarn_v1_age="cache-min $(( MIN_AGE_DAYS * 86400 ))"
     local expected_yarn_v2_age="npmMinimalAgeGate: $(yaml_quote "${MIN_AGE_DAYS}d")"
     local expected_uv_exceptions=""
@@ -2095,8 +2479,10 @@ validate_configs() {
     local expected_yarn_exceptions=""
     local expected_pnpm_exceptions=""
     local current_exceptions item
+    local current_deno_config
 
     pnpm_config=$(pnpm_active_config_path)
+    expected_deno_config=$(build_deno_minimum_dependency_age_config)
 
     if pnpm_active_config_is_yaml; then
         expected_pnpm_age="minimumReleaseAge: $(( MIN_AGE_DAYS * 1440 ))"
@@ -2187,6 +2573,17 @@ validate_configs() {
         record_validation_skip "bun" "config not present" "bun"
     fi
 
+    if [[ -f "$deno_config" ]]; then
+        current_deno_config=$(current_deno_minimum_dependency_age_config "$deno_config")
+        if [[ "$current_deno_config" == "$expected_deno_config" ]]; then
+            record_validation_ok "deno" "minimumDependencyAge matches" "deno"
+        else
+            record_validation_fail "deno" "minimumDependencyAge settings do not match" "deno"
+        fi
+    else
+        record_validation_skip "deno" "config not present" "deno"
+    fi
+
     if [[ -f "$yarnrc" ]]; then
         if grep -Fqx "$expected_yarn_v1_age" "$yarnrc" 2>/dev/null; then
             record_validation_ok "yarn v1" "$expected_yarn_v1_age" "yarn-classic"
@@ -2251,7 +2648,7 @@ main() {
         printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
         print_separator
 
-        run_remove_tools pip uv uv-cron npm pnpm bun yarn-classic yarn-berry vlt vlt-cron
+        run_remove_tools pip uv uv-cron npm pnpm bun deno yarn-classic yarn-berry vlt vlt-cron
 
         echo ""
         echo "  Summary"
@@ -2321,6 +2718,7 @@ main() {
     setup_npm
     setup_pnpm
     setup_bun
+    setup_deno
     setup_yarn_classic
     setup_yarn_berry
     setup_vlt
