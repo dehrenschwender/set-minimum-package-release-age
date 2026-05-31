@@ -200,6 +200,8 @@ install_fake_detection_tools() {
     local pip_version="${7:-26.0}"
     local include_vlt="${8:-1}"
     local vlt_version="${9:-0.0.0}"
+    local include_deno="${10:-1}"
+    local deno_version="${11:-2.8.0}"
 
     cat > "$TEST_BIN_DIR/pip3" <<EOF
 #!/usr/bin/env bash
@@ -295,6 +297,23 @@ EOF
         chmod +x "$TEST_BIN_DIR/vlt"
     else
         rm -f "$TEST_BIN_DIR/vlt"
+    fi
+
+    if [[ "$include_deno" == "1" ]]; then
+        cat > "$TEST_BIN_DIR/deno" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf 'deno %s\n' "$deno_version"
+    exit 0
+fi
+
+printf 'deno test binary\n'
+EOF
+        chmod +x "$TEST_BIN_DIR/deno"
+    else
+        rm -f "$TEST_BIN_DIR/deno"
     fi
 }
 

@@ -17,6 +17,7 @@ The repo now uses a shared core library plus thin platform wrappers:
 | JavaScript | `npm` | native age gate | `~/.npmrc` |
 | JavaScript | `pnpm` | native age gate + selectors to exclude | pnpm 11+: `~/.config/pnpm/config.yaml` (Linux) / `~/Library/Preferences/pnpm/config.yaml` (macOS); pnpm 10: platform legacy `rc` |
 | JavaScript | `bun` | native age gate + package excludes | `~/.bunfig.toml` |
+| JavaScript | `deno` | native age gate + package excludes | `~/deno.json` |
 | JavaScript | `yarn classic (v1)` | cache TTL workaround, not a true publish-age gate | `~/.yarnrc` |
 | JavaScript | `yarn berry (v2+)` | native age gate + preapproved package patterns | `~/.yarnrc.yml` |
 | JavaScript | `vlt` | native before-date gate | `~/.config/vlt/vlt.json` (Linux) / `~/Library/Preferences/vlt/vlt.json` (macOS) |
@@ -30,6 +31,7 @@ The repo now uses a shared core library plus thin platform wrappers:
 | `npm` | yes | no | no | yes | yes |
 | `pnpm` | yes | yes | no | yes | yes |
 | `bun` | yes | yes | no | yes | no documented minimum |
+| `deno` | yes | yes | no | yes | no documented minimum |
 | `yarn classic (v1)` | no | no | `cache-min` TTL workaround | yes | no |
 | `yarn berry (v2+)` | yes | yes | no | yes | yes |
 | `vlt` | yes | no | no | yes | no documented minimum |
@@ -45,6 +47,7 @@ The repo now uses a shared core library plus thin platform wrappers:
 - Yarn Berry `npmMinimalAgeGate` and `npmPreapprovedPackages` require Yarn `4.10.0+`.
 - `uv` uses `exclude-newer` / `exclude-newer-package`; the current docs confirm support, but this repo does not pin an official minimum introducing version.
 - `bun` uses `minimumReleaseAge` / `minimumReleaseAgeExcludes`; the current docs confirm support, but this repo does not pin an official minimum introducing version.
+- `deno` uses `minimumDependencyAge`; the current docs confirm support, but this repo does not pin an official minimum introducing version.
 - `vlt` uses `before`; the current implementation supports the config, but this repo does not pin an official minimum introducing version.
 - Yarn Classic only supports `cache-min`, which is a cache freshness workaround rather than native publish-date filtering.
 
@@ -58,6 +61,7 @@ bash set_package_min_age_macos.sh 14
 bash set_package_min_age_macos.sh 1d
 bash set_package_min_age_macos.sh --exception "uv:setuptools=false"
 bash set_package_min_age_macos.sh --exception "pnpm:webpack" --exception "bun:typescript"
+bash set_package_min_age_macos.sh --exception "deno:npm:chalk" --exception "deno:jsr:@std/assert"
 bash set_package_min_age_macos.sh --exception "yarn-berry:@myorg/*"
 bash set_package_min_age_macos.sh --remove-tool uv --remove-tool uv-cron
 bash set_package_min_age_macos.sh --remove
@@ -72,6 +76,7 @@ bash set_package_min_age_linux.sh 14
 bash set_package_min_age_linux.sh 1d
 bash set_package_min_age_linux.sh --exception "uv:setuptools=false"
 bash set_package_min_age_linux.sh --exception "pnpm:webpack" --exception "bun:typescript"
+bash set_package_min_age_linux.sh --exception "deno:npm:chalk" --exception "deno:jsr:@std/assert"
 bash set_package_min_age_linux.sh --exception "yarn-berry:@myorg/*"
 bash set_package_min_age_linux.sh --remove-tool yarn-berry
 bash set_package_min_age_linux.sh --remove
@@ -86,6 +91,8 @@ bash set_package_min_age_linux.sh --help
   - package name, glob, or supported version selector
 - `--exception bun:PACKAGE`
   - package name to bypass the age gate
+- `--exception deno:SPECIFIER`
+  - package specifier to bypass the age gate; must start with `npm:` or `jsr:`
 - `--exception yarn-berry:PATTERN`
   - pattern added to Yarn Berry `npmPreapprovedPackages`
 
@@ -103,6 +110,7 @@ bash set_package_min_age_linux.sh 7 \
   --exception "uv:setuptools=false" \
   --exception "pnpm:@myorg/*" \
   --exception "bun:typescript" \
+  --exception "deno:npm:chalk" \
   --exception "yarn-berry:@myorg/*"
 ```
 
@@ -116,6 +124,7 @@ Use repeatable `--remove-tool` flags to remove settings for only selected manage
 - `npm`
 - `pnpm`
 - `bun`
+- `deno`
 - `yarn-classic`
 - `yarn-berry`
 - `vlt`
@@ -126,6 +135,7 @@ Examples:
 ```bash
 bash set_package_min_age_linux.sh --remove-tool pip
 bash set_package_min_age_linux.sh --remove-tool uv --remove-tool uv-cron
+bash set_package_min_age_linux.sh --remove-tool deno
 bash set_package_min_age_linux.sh --remove-tool yarn-berry
 bash set_package_min_age_linux.sh --remove-tool vlt --remove-tool vlt-cron
 ```
@@ -146,6 +156,8 @@ For each supported tool, the script:
 `pip` is written as an absolute `uploaded-prior-to` timestamp under `[install]`.
 
 `uv` is still written with an absolute `exclude-newer` timestamp, so the scripts also manage a daily cron job that refreshes the date.
+
+`deno` is written with a relative `minimumDependencyAge` value in minutes. Deno uses project config files, so the scripts manage `~/deno.json` as a home-level default for projects below `HOME`; set `DENO_CONFIG_PATH` if you want to manage a different project config.
 
 `vlt` is written with an absolute `before` timestamp under `config`, so the scripts also manage a daily cron job that reruns the wrapper in a refresh mode for the VLT config only.
 
