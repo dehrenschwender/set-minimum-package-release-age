@@ -15,9 +15,11 @@ test_linux_wrapper() {
     output=$(bash "$PROJECT_ROOT/set_package_min_age_linux.sh" 3 --exception pnpm:webpack)
 
     assert_contains "$output" "set-minimum-package-release-age (Linux)"
+    assert_file_contains "$HOME/.config/pypoetry/config.toml" "min-release-age = 3"
     assert_file_contains "$HOME/.config/pnpm/config.yaml" "minimumReleaseAge: 4320"
     assert_file_contains "$HOME/.config/pnpm/config.yaml" "minimumReleaseAgeExclude: ['webpack']"
     assert_file_contains "$HOME/.config/vlt/vlt.json" '"before": "2026-03-29T00:00:00Z"'
+    assert_file_contains "$HOME/.bundle/config" 'BUNDLE_COOLDOWN: "3"'
     cleanup_test_env
 }
 

@@ -2,12 +2,13 @@
 
 ## Overview
 
-This repository contains Bash scripts that configure a minimum package release age across Python and JavaScript package managers as a supply-chain mitigation.
+This repository contains Bash scripts that configure a minimum package release age across Python, JavaScript, and Ruby package managers as a supply-chain mitigation.
 
 Supported tools:
 
 - `pip`
 - `uv`
+- `Poetry`
 - `npm`
 - `pnpm`
 - `bun`
@@ -15,8 +16,9 @@ Supported tools:
 - `yarn classic (v1)` as a cache TTL workaround
 - `yarn berry (v2+)` with native age-gate config
 - `vlt`
+- `Bundler`
 
-The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `pnpm`, `bun`, `deno`, and Yarn Berry.
+The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `Poetry`, `npm`, `pnpm`, `bun`, `deno`, and Yarn Berry.
 
 ## Architecture
 
@@ -25,9 +27,9 @@ The repo uses a shared core plus thin wrappers:
 - `lib/set_package_min_age_common.sh`
   - shared `usage`, `parse_args`, helper functions, per-tool `setup_*` / `remove_*`, `validate_configs`, and `main`
 - `set_package_min_age_linux.sh`
-  - Linux wrapper that sets the GNU-style adapters and Linux pnpm path
+  - Linux wrapper that sets the GNU-style adapters plus Linux pnpm, Poetry, and vlt paths
 - `set_package_min_age_macos.sh`
-  - macOS wrapper that sets the BSD-style adapters and macOS pnpm path
+  - macOS wrapper that sets the BSD-style adapters plus macOS pnpm, Poetry, and vlt paths
 
 When changing common behavior, prefer editing the shared library. Wrapper changes should stay limited to platform-specific path, date, and cron differences.
 
@@ -35,6 +37,7 @@ Validation is config-based for every supported tool. `validate_configs()` checks
 
 - `pip`
 - `uv`
+- `Poetry`
 - `npm`
 - `pnpm`
 - `bun`
@@ -42,17 +45,19 @@ Validation is config-based for every supported tool. `validate_configs()` checks
 - `yarn classic (v1)`
 - `yarn berry (v2+)`
 - `vlt`
+- `Bundler`
 
-This is intentional: it avoids relying on inconsistent CLI config getters and ensures `bun` and `deno` are validated too.
+This is intentional: it avoids relying on inconsistent CLI config getters and ensures every managed config file, including `bun`, `deno`, Poetry, and Bundler, is validated.
 
 ## Package Manager Policy
 
-This repository currently has no dependency-managed application ecosystem manifests (`package.json`, Python manifests, `go.mod`, `Cargo.toml`, Maven, or Gradle files).
+This repository currently has no dependency-managed application ecosystem manifests (`package.json`, Python manifests, `Gemfile`, `go.mod`, `Cargo.toml`, Maven, or Gradle files).
 
 If dependency manifests are added later:
 
 - Use `pnpm` for JavaScript or TypeScript projects.
 - Use `uv` for Python projects.
+- Use Bundler for Ruby projects.
 - Keep standard tooling for Go, Rust, Java, and Kotlin.
 - Commit lockfiles with manifest changes.
 
@@ -69,7 +74,9 @@ If dependencies are added later:
 
 ## Last Dependency Update
 
-2026-05-31: Dependency maintenance scan found no dependency-managed ecosystems, manifests, lockfiles, or CI install workflows. No package-manager migrations or dependency updates were performed.
+2026-07-06: Dependency maintenance scan found no dependency-managed ecosystems, manifests, lockfiles, CI install workflows, or Ansible/service dependency surfaces. No package-manager migrations or dependency updates were performed.
+
+2026-07-06: Package-manager support refresh added Poetry and Bundler cooldown support, added npm exception support, updated pip/uv/Deno to relative duration settings, updated documented runtime version gates, and replaced `Makefile` with `justfile`.
 
 Recorded package changes: none recorded.
 
@@ -101,9 +108,9 @@ bash -n set_package_min_age_macos.sh
 Preferred shortcuts:
 
 ```bash
-make syntax-check
-make test
-make check
+just syntax-check
+just test
+just check
 ```
 
 Full test suite:

@@ -8,6 +8,7 @@ PLATFORM_NAME="Linux"
 PNPM_CONFIG_PATH="$HOME/.config/pnpm/config.yaml"
 PNPM_RC_PATH="$HOME/.config/pnpm/rc"
 VLT_CONFIG_PATH="$HOME/.config/vlt/vlt.json"
+POETRY_CONFIG_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/pypoetry/config.toml"
 
 platform_date_days_ago_rfc3339() {
     date -d "$1 days ago" +%Y-%m-%dT00:00:00Z
