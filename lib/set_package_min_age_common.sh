@@ -8,6 +8,8 @@ PNPM_CONFIG_PATH="${PNPM_CONFIG_PATH:-$HOME/.config/pnpm/config.yaml}"
 PNPM_RC_PATH="${PNPM_RC_PATH:-$HOME/.config/pnpm/rc}"
 VLT_CONFIG_PATH="${VLT_CONFIG_PATH:-$HOME/.config/vlt/vlt.json}"
 DENO_CONFIG_PATH="${DENO_CONFIG_PATH:-$HOME/deno.json}"
+POETRY_CONFIG_PATH="${POETRY_CONFIG_PATH:-$HOME/.config/pypoetry/config.toml}"
+BUNDLER_CONFIG_PATH="${BUNDLER_CONFIG_PATH:-$HOME/.bundle/config}"
 
 REMOVE_MODE=false
 REMOVE_SCOPED_MODE=false
@@ -16,6 +18,9 @@ MIN_AGE_DAYS=7
 BACKUP_SUFFIX=""
 REMOVE_TOOLS=()
 UV_EXCEPTIONS=()
+POETRY_EXCEPTIONS=()
+POETRY_SOURCE_EXCEPTIONS=()
+NPM_EXCEPTIONS=()
 PNPM_EXCEPTIONS=()
 BUN_EXCEPTIONS=()
 YARN_EXCEPTIONS=()
@@ -38,7 +43,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS] [DAYS]
 
-Set a minimum package release age across pip, uv, npm, pnpm, bun, deno, yarn, and vlt.
+Set a minimum package release age across pip, uv, Poetry, npm, pnpm, bun, deno, yarn, vlt, and Bundler.
 
 Arguments:
   DAYS                    Minimum age in days (default: 7). Accepts "14" or "14d".
@@ -47,6 +52,9 @@ Options:
   --exception SPEC        Add a native exception in the form:
                           uv:<package>=false
                           uv:<package>=<duration-or-rfc3339>
+                          poetry:<package>
+                          poetry-source:<source-name-or-url>
+                          npm:<package-or-glob>
                           pnpm:<selector>
                           bun:<package>
                           deno:<npm:package-or-jsr:package>
@@ -61,6 +69,7 @@ Examples:
   $(basename "$0") 14                      # Set minimum age to 14 days
   $(basename "$0") 1d                      # Set minimum age to 1 day
   $(basename "$0") --exception uv:foo=false 14
+  $(basename "$0") --exception poetry:internal-lib --exception npm:'@myorg/*'
   $(basename "$0") --exception pnpm:webpack --exception bun:typescript
   $(basename "$0") --exception deno:npm:chalk --exception deno:jsr:@std/assert
   $(basename "$0") --exception yarn-berry:'@myorg/*'
@@ -89,6 +98,7 @@ tool_config_path() {
         pip) printf '%s\n' "$HOME/.config/pip/pip.conf" ;;
         uv) printf '%s\n' "$HOME/.config/uv/uv.toml" ;;
         uv-cron) printf '%s\n' "crontab entry ($CRON_MARKER)" ;;
+        poetry) printf '%s\n' "$POETRY_CONFIG_PATH" ;;
         npm) printf '%s\n' "$HOME/.npmrc" ;;
         pnpm) pnpm_active_config_path ;;
         bun) printf '%s\n' "$HOME/.bunfig.toml" ;;
@@ -97,13 +107,14 @@ tool_config_path() {
         yarn-berry) printf '%s\n' "$HOME/.yarnrc.yml" ;;
         vlt) printf '%s\n' "$VLT_CONFIG_PATH" ;;
         vlt-cron) printf '%s\n' "crontab entry ($VLT_CRON_MARKER)" ;;
+        bundler) printf '%s\n' "$BUNDLER_CONFIG_PATH" ;;
         *) return 1 ;;
     esac
 }
 
 tool_supports_native_exceptions() {
     case "$1" in
-        uv|pnpm|bun|deno|yarn-berry) return 0 ;;
+        uv|poetry|npm|pnpm|bun|deno|yarn-berry) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -127,6 +138,27 @@ parse_exception_spec() {
                 exit 1
             fi
             UV_EXCEPTIONS+=("$value")
+            ;;
+        poetry)
+            if [[ -z "$value" ]]; then
+                echo "Error: poetry exceptions require a package name." >&2
+                exit 1
+            fi
+            POETRY_EXCEPTIONS+=("$value")
+            ;;
+        poetry-source)
+            if [[ -z "$value" ]]; then
+                echo "Error: poetry-source exceptions require a source name or URL." >&2
+                exit 1
+            fi
+            POETRY_SOURCE_EXCEPTIONS+=("$value")
+            ;;
+        npm)
+            if [[ -z "$value" ]]; then
+                echo "Error: npm exceptions require a package name or glob." >&2
+                exit 1
+            fi
+            NPM_EXCEPTIONS+=("$value")
             ;;
         pnpm)
             if [[ -z "$value" ]]; then
@@ -156,7 +188,7 @@ parse_exception_spec() {
             fi
             YARN_EXCEPTIONS+=("$value")
             ;;
-        pip|npm|yarn-classic|vlt)
+        pip|yarn-classic|vlt|bundler)
             echo "Error: $target does not support native exceptions." >&2
             exit 1
             ;;
@@ -171,7 +203,7 @@ parse_remove_tool() {
     local tool="$1"
 
     case "$tool" in
-        pip|uv|uv-cron|npm|pnpm|bun|deno|yarn-classic|yarn-berry|vlt|vlt-cron)
+        pip|uv|uv-cron|poetry|npm|pnpm|bun|deno|yarn-classic|yarn-berry|vlt|vlt-cron|bundler)
             ;;
         *)
             echo "Error: Unknown remove tool: $tool" >&2
@@ -191,6 +223,9 @@ parse_args() {
     MIN_AGE_DAYS=7
     REMOVE_TOOLS=()
     UV_EXCEPTIONS=()
+    POETRY_EXCEPTIONS=()
+    POETRY_SOURCE_EXCEPTIONS=()
+    NPM_EXCEPTIONS=()
     PNPM_EXCEPTIONS=()
     BUN_EXCEPTIONS=()
     YARN_EXCEPTIONS=()
@@ -250,7 +285,7 @@ parse_args() {
     fi
 
     if [[ "$REMOVE_MODE" == true || "$REMOVE_SCOPED_MODE" == true ]]; then
-        if [[ ${#UV_EXCEPTIONS[@]} -gt 0 || ${#PNPM_EXCEPTIONS[@]} -gt 0 || ${#BUN_EXCEPTIONS[@]} -gt 0 || ${#DENO_EXCEPTIONS[@]} -gt 0 || ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
+        if [[ ${#UV_EXCEPTIONS[@]} -gt 0 || ${#POETRY_EXCEPTIONS[@]} -gt 0 || ${#POETRY_SOURCE_EXCEPTIONS[@]} -gt 0 || ${#NPM_EXCEPTIONS[@]} -gt 0 || ${#PNPM_EXCEPTIONS[@]} -gt 0 || ${#BUN_EXCEPTIONS[@]} -gt 0 || ${#DENO_EXCEPTIONS[@]} -gt 0 || ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
             echo "Error: removal modes cannot be combined with --exception." >&2
             exit 1
         fi
@@ -297,6 +332,7 @@ result_tool_display_name() {
         pip) printf '%s\n' "pip" ;;
         uv) printf '%s\n' "uv" ;;
         uv-cron) printf '%s\n' "uv cron" ;;
+        poetry) printf '%s\n' "Poetry" ;;
         npm) printf '%s\n' "npm" ;;
         pnpm) printf '%s\n' "pnpm" ;;
         bun) printf '%s\n' "bun" ;;
@@ -305,16 +341,17 @@ result_tool_display_name() {
         yarn-berry) printf '%s\n' "yarn v2+" ;;
         vlt) printf '%s\n' "vlt" ;;
         vlt-cron) printf '%s\n' "vlt cron" ;;
+        bundler) printf '%s\n' "Bundler" ;;
         *) printf '%s\n' "$1" ;;
     esac
 }
 
 init_results_table() {
-    RESULT_TOOL_KEYS=(pip uv uv-cron npm pnpm bun deno yarn-classic yarn-berry vlt vlt-cron)
-    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- -- -- -- --)
-    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "" "" "" "")
-    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- -- -- -- --)
-    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "" "" "" "")
+    RESULT_TOOL_KEYS=(pip uv uv-cron poetry npm pnpm bun deno yarn-classic yarn-berry vlt vlt-cron bundler)
+    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- --)
+    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "")
+    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- --)
+    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "")
 }
 
 result_row_index() {
@@ -322,14 +359,16 @@ result_row_index() {
         pip) printf '%s\n' 0 ;;
         uv) printf '%s\n' 1 ;;
         uv-cron) printf '%s\n' 2 ;;
-        npm) printf '%s\n' 3 ;;
-        pnpm) printf '%s\n' 4 ;;
-        bun) printf '%s\n' 5 ;;
-        deno) printf '%s\n' 6 ;;
-        yarn-classic) printf '%s\n' 7 ;;
-        yarn-berry) printf '%s\n' 8 ;;
-        vlt) printf '%s\n' 9 ;;
-        vlt-cron) printf '%s\n' 10 ;;
+        poetry) printf '%s\n' 3 ;;
+        npm) printf '%s\n' 4 ;;
+        pnpm) printf '%s\n' 5 ;;
+        bun) printf '%s\n' 6 ;;
+        deno) printf '%s\n' 7 ;;
+        yarn-classic) printf '%s\n' 8 ;;
+        yarn-berry) printf '%s\n' 9 ;;
+        vlt) printf '%s\n' 10 ;;
+        vlt-cron) printf '%s\n' 11 ;;
+        bundler) printf '%s\n' 12 ;;
         *) return 1 ;;
     esac
 }
@@ -414,13 +453,13 @@ print_results_table() {
     echo ""
 }
 
-pip_cutoff_timestamp() {
-    date_days_ago_rfc3339 "$MIN_AGE_DAYS"
+pip_uploaded_prior_to_value() {
+    printf 'P%sD\n' "$MIN_AGE_DAYS"
 }
 
 pip_detail_text() {
-    local timestamp="$1"
-    printf 'uploaded-prior-to = %s (%sd window)' "$timestamp" "$MIN_AGE_DAYS"
+    local value="$1"
+    printf 'uploaded-prior-to = %s (%sd window)' "$value" "$MIN_AGE_DAYS"
 }
 
 exception_count_suffix() {
@@ -502,6 +541,13 @@ detect_supported_tool_installations() {
         printf 'uv|no|not found|n/a\n'
     fi
 
+    if tool_path=$(resolve_tool_path_with_which "poetry"); then
+        tool_version=$(detect_command_version "poetry" "$tool_path")
+        printf 'Poetry|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
+    else
+        printf 'Poetry|no|not found|n/a\n'
+    fi
+
     if tool_path=$(resolve_tool_path_with_which "npm"); then
         tool_version=$(detect_command_version "npm" "$tool_path")
         printf 'npm|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
@@ -535,6 +581,13 @@ detect_supported_tool_installations() {
         printf 'vlt|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
     else
         printf 'vlt|no|not found|n/a\n'
+    fi
+
+    if tool_path=$(resolve_tool_path_with_which "bundle"); then
+        tool_version=$(detect_command_version "bundle" "$tool_path")
+        printf 'Bundler|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
+    else
+        printf 'Bundler|no|not found|n/a\n'
     fi
 
     if yarn_path=$(resolve_tool_path_with_which "yarn"); then
@@ -1053,6 +1106,13 @@ cleanup_empty_file() {
     fi
 }
 
+cleanup_yaml_marker_only_file() {
+    local file="$1"
+    if [[ -f "$file" ]] && ! grep -vE '^[[:space:]]*(---)?[[:space:]]*$' "$file" >/dev/null 2>&1; then
+        rm -f "$file"
+    fi
+}
+
 toml_quote() {
     local value="$1"
     value=${value//\\/\\\\}
@@ -1103,27 +1163,41 @@ json_flow_array() {
     printf '%s' "$result"
 }
 
+comma_join() {
+    local result=""
+    local item
+
+    for item in "$@"; do
+        if [[ -n "$result" ]]; then
+            result+=","
+        fi
+        result+="$item"
+    done
+
+    printf '%s' "$result"
+}
+
 shell_quote() {
     local value="$1"
     value=${value//\'/\'\\\'\'}
     printf "'%s'" "$value"
 }
 
-deno_min_age_minutes() {
-    printf '%s\n' "$(( MIN_AGE_DAYS * 1440 ))"
+deno_min_age_duration() {
+    printf 'P%sD\n' "$MIN_AGE_DAYS"
 }
 
 build_deno_minimum_dependency_age_config() {
-    local min_age_minutes
-    min_age_minutes=$(deno_min_age_minutes)
+    local min_age_duration
+    min_age_duration=$(deno_min_age_duration)
 
     if [[ ${#DENO_EXCEPTIONS[@]} -eq 0 ]]; then
-        printf '  "minimumDependencyAge": %s\n' "$min_age_minutes"
+        printf '  "minimumDependencyAge": "%s"\n' "$min_age_duration"
         return
     fi
 
     printf '  "minimumDependencyAge": {\n'
-    printf '    "age": %s,\n' "$min_age_minutes"
+    printf '    "age": "%s",\n' "$min_age_duration"
     printf '    "exclude": %s\n' "$(json_flow_array "${DENO_EXCEPTIONS[@]}")"
     printf '  }\n'
 }
@@ -1580,15 +1654,40 @@ run_preflight_checks() {
 
     PREFLIGHT_FAILED_TOOLS=()
 
-    ensure_tool_version "pip" "26.0" "uploaded-prior-to" || status=1
+    ensure_tool_version "pip" "26.1.0" "uploaded-prior-to duration" || status=1
 
     installed=$(lookup_detected_tool_field "uv" installed)
     version=$(lookup_detected_tool_field "uv" version)
     path=$(lookup_detected_tool_field "uv" path)
     if [[ "$installed" == "yes" ]]; then
-        record_preflight_ok "uv" "$installed" "$version" "$path" "exclude-newer supported; no documented minimum version"
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_fail "uv" "$installed" "$version" "$path" "relative exclude-newer requires version detection; installed version could not be determined" "uv"
+            status=1
+        elif version_gte "$version" "0.9.17"; then
+            record_preflight_ok "uv" "$installed" "$version" "$path" "relative exclude-newer requires >= 0.9.17"
+        else
+            record_preflight_fail "uv" "$installed" "$version" "$path" "relative exclude-newer requires >= 0.9.17" "uv"
+            status=1
+        fi
     else
         record_preflight_skip "uv" "$installed" "$version" "$path" "not installed; config can still be written"
+    fi
+
+    installed=$(lookup_detected_tool_field "Poetry" installed)
+    version=$(lookup_detected_tool_field "Poetry" version)
+    path=$(lookup_detected_tool_field "Poetry" path)
+    if [[ "$installed" == "yes" ]]; then
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_fail "Poetry" "$installed" "$version" "$path" "solver.min-release-age requires version detection; installed version could not be determined" "poetry"
+            status=1
+        elif version_gte "$version" "2.4.0"; then
+            record_preflight_ok "Poetry" "$installed" "$version" "$path" "solver.min-release-age requires >= 2.4.0"
+        else
+            record_preflight_fail "Poetry" "$installed" "$version" "$path" "solver.min-release-age requires >= 2.4.0" "poetry"
+            status=1
+        fi
+    else
+        record_preflight_skip "Poetry" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
 
     ensure_tool_version "npm" "11.10.0" "min-release-age" || status=1
@@ -1622,7 +1721,15 @@ run_preflight_checks() {
     version=$(lookup_detected_tool_field "bun" version)
     path=$(lookup_detected_tool_field "bun" path)
     if [[ "$installed" == "yes" ]]; then
-        record_preflight_ok "bun" "$installed" "$version" "$path" "minimumReleaseAge supported; no documented minimum version"
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_fail "bun" "$installed" "$version" "$path" "minimumReleaseAge requires version detection; installed version could not be determined" "bun"
+            status=1
+        elif version_gte "$version" "1.3.0"; then
+            record_preflight_ok "bun" "$installed" "$version" "$path" "minimumReleaseAge requires >= 1.3.0"
+        else
+            record_preflight_fail "bun" "$installed" "$version" "$path" "minimumReleaseAge requires >= 1.3.0" "bun"
+            status=1
+        fi
     else
         record_preflight_skip "bun" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
@@ -1631,7 +1738,15 @@ run_preflight_checks() {
     version=$(lookup_detected_tool_field "deno" version)
     path=$(lookup_detected_tool_field "deno" path)
     if [[ "$installed" == "yes" ]]; then
-        record_preflight_ok "deno" "$installed" "$version" "$path" "minimumDependencyAge supported; no documented minimum version"
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_fail "deno" "$installed" "$version" "$path" "minimumDependencyAge requires version detection; installed version could not be determined" "deno"
+            status=1
+        elif version_gte "$version" "2.6.0"; then
+            record_preflight_ok "deno" "$installed" "$version" "$path" "minimumDependencyAge requires >= 2.6.0"
+        else
+            record_preflight_fail "deno" "$installed" "$version" "$path" "minimumDependencyAge requires >= 2.6.0" "deno"
+            status=1
+        fi
     else
         record_preflight_skip "deno" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
@@ -1643,6 +1758,23 @@ run_preflight_checks() {
         record_preflight_ok "vlt" "$installed" "$version" "$path" "before config supported; no documented minimum version"
     else
         record_preflight_skip "vlt" "$installed" "$version" "$path" "not installed; config can still be written"
+    fi
+
+    installed=$(lookup_detected_tool_field "Bundler" installed)
+    version=$(lookup_detected_tool_field "Bundler" version)
+    path=$(lookup_detected_tool_field "Bundler" path)
+    if [[ "$installed" == "yes" ]]; then
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_fail "Bundler" "$installed" "$version" "$path" "cooldown requires version detection; installed version could not be determined" "bundler"
+            status=1
+        elif version_gte "$version" "4.0.13"; then
+            record_preflight_ok "Bundler" "$installed" "$version" "$path" "cooldown requires >= 4.0.13"
+        else
+            record_preflight_fail "Bundler" "$installed" "$version" "$path" "cooldown requires >= 4.0.13" "bundler"
+            status=1
+        fi
+    else
+        record_preflight_skip "Bundler" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
 
     installed=$(lookup_detected_tool_field "yarn v1" installed)
@@ -1661,10 +1793,10 @@ run_preflight_checks() {
         if [[ -z "$version" || "$version" == "unknown" ]]; then
             record_preflight_fail "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires version detection; installed version could not be determined" "yarn-berry"
             status=1
-        elif version_gte "$version" "4.10.0"; then
-            record_preflight_ok "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.10.0"
+        elif version_gte "$version" "4.12.0"; then
+            record_preflight_ok "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.12.0"
         else
-            record_preflight_fail "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.10.0" "yarn-berry"
+            record_preflight_fail "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.12.0" "yarn-berry"
             status=1
         fi
     else
@@ -1682,6 +1814,7 @@ run_remove_tools() {
             pip) remove_pip ;;
             uv) remove_uv ;;
             uv-cron) remove_cron_uv ;;
+            poetry) remove_poetry ;;
             npm) remove_npm ;;
             pnpm) remove_pnpm ;;
             bun) remove_bun ;;
@@ -1690,6 +1823,7 @@ run_remove_tools() {
             yarn-berry) remove_yarn_berry ;;
             vlt) remove_vlt ;;
             vlt-cron) remove_cron_vlt ;;
+            bundler) remove_bundler ;;
         esac
     done
 }
@@ -1699,6 +1833,7 @@ print_config_files() {
     print_separator
     echo "  pip            $(tool_config_path pip)"
     echo "  uv             $(tool_config_path uv)"
+    echo "  Poetry         $(tool_config_path poetry)"
     echo "  npm            $(tool_config_path npm)"
     echo "  pnpm           $(tool_config_path pnpm)"
     echo "  bun            $(tool_config_path bun)"
@@ -1706,17 +1841,18 @@ print_config_files() {
     echo "  yarn v1        $(tool_config_path yarn-classic)"
     echo "  yarn v2+       $(tool_config_path yarn-berry)"
     echo "  vlt            $(tool_config_path vlt)"
+    echo "  Bundler        $(tool_config_path bundler)"
     echo ""
 }
 
 setup_pip() {
     local pip_conf_dir="$HOME/.config/pip"
     local pip_conf="$pip_conf_dir/pip.conf"
-    local cutoff_timestamp desired_line detail status current current_cutoff
+    local uploaded_prior_to desired_line detail status current current_value
 
-    cutoff_timestamp=$(pip_cutoff_timestamp)
-    desired_line="uploaded-prior-to = ${cutoff_timestamp}"
-    detail=$(pip_detail_text "$cutoff_timestamp")
+    uploaded_prior_to=$(pip_uploaded_prior_to_value)
+    desired_line="uploaded-prior-to = ${uploaded_prior_to}"
+    detail=$(pip_detail_text "$uploaded_prior_to")
 
     mkdir -p "$pip_conf_dir"
 
@@ -1732,9 +1868,9 @@ setup_pip() {
 
     status="added"
     if grep -q '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" 2>/dev/null; then
-        current_cutoff=$(grep '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" | head -1 | sed 's/.*= *//')
+        current_value=$(grep '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" | head -1 | sed 's/.*= *//')
         status="updated"
-        detail="${current_cutoff} --> ${detail}"
+        detail="${current_value} --> ${detail}"
     elif grep -q '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" 2>/dev/null; then
         current=$(grep '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" | head -1 | sed 's/.*= *//')
         status="updated"
@@ -1757,9 +1893,9 @@ setup_pip() {
 setup_uv() {
     local uv_conf_dir="$HOME/.config/uv"
     local uv_conf="$uv_conf_dir/uv.toml"
-    local exclude_newer_date desired_exception_line current_exceptions desired_exceptions detail status current
+    local exclude_newer_value desired_exception_line current_exceptions desired_exceptions detail status current
 
-    exclude_newer_date=$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")
+    exclude_newer_value="P${MIN_AGE_DAYS}D"
     desired_exceptions=""
     if [[ ${#UV_EXCEPTIONS[@]} -gt 0 ]]; then
         desired_exceptions=$(build_uv_exception_line)
@@ -1769,9 +1905,9 @@ setup_uv() {
     touch "$uv_conf"
 
     current_exceptions=$(current_lines_or_empty "$uv_conf" '^exclude-newer-package[[:space:]]*=')
-    if grep -q "^exclude-newer = \"${exclude_newer_date}\"$" "$uv_conf" 2>/dev/null \
+    if grep -q "^exclude-newer = \"${exclude_newer_value}\"$" "$uv_conf" 2>/dev/null \
         && [[ "$current_exceptions" == "$desired_exceptions" ]]; then
-        emit_config_status "uv" "uv" "ok" "exclude-newer = \"${exclude_newer_date}\"$(exception_count_suffix "${#UV_EXCEPTIONS[@]}" "exceptions")"
+        emit_config_status "uv" "uv" "ok" "exclude-newer = \"${exclude_newer_value}\"$(exception_count_suffix "${#UV_EXCEPTIONS[@]}" "exceptions")"
         SKIPPED_TOOLS+=("uv")
         return 0
     fi
@@ -1779,13 +1915,13 @@ setup_uv() {
     backup_if_exists "$uv_conf"
 
     status="added"
-    detail="exclude-newer = \"${exclude_newer_date}\"$(exception_count_suffix "${#UV_EXCEPTIONS[@]}" "exceptions")"
+    detail="exclude-newer = \"${exclude_newer_value}\"$(exception_count_suffix "${#UV_EXCEPTIONS[@]}" "exceptions")"
     if grep -q '^exclude-newer[[:space:]]*=' "$uv_conf" 2>/dev/null; then
         current=$(grep '^exclude-newer[[:space:]]*=' "$uv_conf" | head -1 | sed 's/.*= *//')
         status="updated"
         detail="${current} --> ${detail}"
     fi
-    replace_or_append_line "$uv_conf" '^exclude-newer[[:space:]]*=' "exclude-newer = \"${exclude_newer_date}\""
+    replace_or_append_line "$uv_conf" '^exclude-newer[[:space:]]*=' "exclude-newer = \"${exclude_newer_value}\""
 
     if [[ ${#UV_EXCEPTIONS[@]} -gt 0 ]]; then
         desired_exception_line=$(build_uv_exception_line)
@@ -1798,6 +1934,62 @@ setup_uv() {
         emit_config_status "uv" "uv" "$status" "$detail"
     else
         emit_config_status "uv" "uv" "FAIL" "$detail"
+    fi
+}
+
+setup_poetry() {
+    local poetry_conf="$POETRY_CONFIG_PATH"
+    local desired_age_line="min-release-age = ${MIN_AGE_DAYS}"
+    local desired_package_exceptions=""
+    local desired_source_exceptions=""
+    local current_package_exceptions current_source_exceptions detail status current
+
+    ensure_file_exists "$poetry_conf"
+
+    if [[ ${#POETRY_EXCEPTIONS[@]} -gt 0 ]]; then
+        desired_package_exceptions="min-release-age-exclude = $(toml_quote "$(comma_join "${POETRY_EXCEPTIONS[@]}")")"
+    fi
+    if [[ ${#POETRY_SOURCE_EXCEPTIONS[@]} -gt 0 ]]; then
+        desired_source_exceptions="min-release-age-exclude-source = $(toml_quote "$(comma_join "${POETRY_SOURCE_EXCEPTIONS[@]}")")"
+    fi
+
+    current_package_exceptions=$(current_lines_or_empty "$poetry_conf" '^min-release-age-exclude[[:space:]]*=')
+    current_source_exceptions=$(current_lines_or_empty "$poetry_conf" '^min-release-age-exclude-source[[:space:]]*=')
+
+    if grep -q "^${desired_age_line}$" "$poetry_conf" 2>/dev/null \
+        && [[ "$current_package_exceptions" == "$desired_package_exceptions" ]] \
+        && [[ "$current_source_exceptions" == "$desired_source_exceptions" ]]; then
+        emit_config_status "Poetry" "poetry" "ok" "min-release-age = ${MIN_AGE_DAYS}$(exception_count_suffix "${#POETRY_EXCEPTIONS[@]}" "package-exceptions")$(exception_count_suffix "${#POETRY_SOURCE_EXCEPTIONS[@]}" "source-exceptions")"
+        SKIPPED_TOOLS+=("poetry")
+        return 0
+    fi
+
+    backup_if_exists "$poetry_conf"
+
+    status="added"
+    detail="min-release-age = ${MIN_AGE_DAYS}$(exception_count_suffix "${#POETRY_EXCEPTIONS[@]}" "package-exceptions")$(exception_count_suffix "${#POETRY_SOURCE_EXCEPTIONS[@]}" "source-exceptions")"
+    if grep -q '^min-release-age[[:space:]]*=' "$poetry_conf" 2>/dev/null; then
+        current=$(grep '^min-release-age[[:space:]]*=' "$poetry_conf" | head -1 | sed 's/.*= *//')
+        status="updated"
+        detail="${current} --> ${detail}"
+    fi
+
+    upsert_line_in_section "$poetry_conf" "[solver]" '^min-release-age[[:space:]]*=' "$desired_age_line"
+    if [[ ${#POETRY_EXCEPTIONS[@]} -gt 0 ]]; then
+        upsert_line_in_section "$poetry_conf" "[solver]" '^min-release-age-exclude[[:space:]]*=' "$desired_package_exceptions"
+    else
+        remove_matching_lines "$poetry_conf" '^min-release-age-exclude[[:space:]]*='
+    fi
+    if [[ ${#POETRY_SOURCE_EXCEPTIONS[@]} -gt 0 ]]; then
+        upsert_line_in_section "$poetry_conf" "[solver]" '^min-release-age-exclude-source[[:space:]]*=' "$desired_source_exceptions"
+    else
+        remove_matching_lines "$poetry_conf" '^min-release-age-exclude-source[[:space:]]*='
+    fi
+
+    if verify_and_finalize "$poetry_conf" "poetry" 'min-release-age\|\[solver\]'; then
+        emit_config_status "Poetry" "poetry" "$status" "$detail"
+    else
+        emit_config_status "Poetry" "poetry" "FAIL" "$detail"
     fi
 }
 
@@ -1854,12 +2046,23 @@ setup_cron_vlt() {
 setup_npm() {
     local npmrc="$HOME/.npmrc"
     local desired_line="min-release-age=${MIN_AGE_DAYS}"
-    local detail status current
+    local desired_exceptions="" current_exceptions item detail status current
 
     touch "$npmrc"
 
-    if grep -q "^${desired_line}$" "$npmrc" 2>/dev/null; then
-        emit_config_status "npm" "npm" "ok" "$desired_line"
+    if [[ ${#NPM_EXCEPTIONS[@]} -gt 0 ]]; then
+        for item in "${NPM_EXCEPTIONS[@]}"; do
+            desired_exceptions+=$'min-release-age-exclude[]='
+            desired_exceptions+="$item"
+            desired_exceptions+=$'\n'
+        done
+        desired_exceptions=${desired_exceptions%$'\n'}
+    fi
+
+    current_exceptions=$(current_lines_or_empty "$npmrc" '^min-release-age-exclude')
+    if grep -q "^${desired_line}$" "$npmrc" 2>/dev/null \
+        && [[ "$current_exceptions" == "$desired_exceptions" ]]; then
+        emit_config_status "npm" "npm" "ok" "${desired_line}$(exception_count_suffix "${#NPM_EXCEPTIONS[@]}" "exceptions")"
         SKIPPED_TOOLS+=("npm")
         return 0
     fi
@@ -1867,14 +2070,20 @@ setup_npm() {
     backup_if_exists "$npmrc"
 
     status="added"
-    detail="$desired_line"
-    if grep -q '^min-release-age' "$npmrc" 2>/dev/null; then
-        current=$(grep '^min-release-age' "$npmrc" | head -1 | sed 's/.*=//')
+    detail="${desired_line}$(exception_count_suffix "${#NPM_EXCEPTIONS[@]}" "exceptions")"
+    if grep -q '^min-release-age=' "$npmrc" 2>/dev/null; then
+        current=$(grep '^min-release-age=' "$npmrc" | head -1 | sed 's/.*=//')
         status="updated"
-        detail="${current} --> ${MIN_AGE_DAYS}"
+        detail="${current} --> ${MIN_AGE_DAYS}$(exception_count_suffix "${#NPM_EXCEPTIONS[@]}" "exceptions")"
     fi
 
     replace_or_append_line "$npmrc" '^min-release-age=' "$desired_line"
+    remove_matching_lines "$npmrc" '^min-release-age-exclude'
+    if [[ ${#NPM_EXCEPTIONS[@]} -gt 0 ]]; then
+        for item in "${NPM_EXCEPTIONS[@]}"; do
+            printf 'min-release-age-exclude[]=%s\n' "$item" >> "$npmrc"
+        done
+    fi
     if verify_and_finalize "$npmrc" "npm" 'min-release-age'; then
         emit_config_status "npm" "npm" "$status" "$detail"
     else
@@ -1917,7 +2126,7 @@ setup_pnpm() {
 
     current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimumReleaseAgeExclude:')
     if [[ -z "$current_exceptions" ]]; then
-        current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimum-release-age-exclude\[\]=')
+        current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimum-release-age-exclude')
     fi
 
     if grep -q "^${desired_line}$" "$pnpm_config" 2>/dev/null \
@@ -1939,10 +2148,10 @@ setup_pnpm() {
 
     if pnpm_active_config_is_yaml; then
         if [[ -f "$PNPM_RC_PATH" ]] \
-            && { grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null || grep -q '^minimum-release-age-exclude\[\]=' "$PNPM_RC_PATH" 2>/dev/null; }; then
+            && { grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null || grep -q '^minimum-release-age-exclude' "$PNPM_RC_PATH" 2>/dev/null; }; then
             backup_if_exists "$PNPM_RC_PATH"
             remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age='
-            remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age-exclude\\[\\]='
+            remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age-exclude'
             strip_file_if_whitespace_only "$PNPM_RC_PATH"
             if ! verify_file_changes "$PNPM_RC_PATH" 'minimum-release-age'; then
                 FAILED_TOOLS+=("pnpm")
@@ -1958,10 +2167,10 @@ setup_pnpm() {
             remove_yaml_top_level_key "$pnpm_config" "minimumReleaseAgeExclude"
         fi
         remove_matching_lines "$pnpm_config" '^minimum-release-age='
-        remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude\\[\\]='
+        remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude'
     else
         replace_or_append_line "$pnpm_config" '^minimum-release-age=' "$desired_line"
-        remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude\\[\\]='
+        remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude'
         if [[ ${#PNPM_EXCEPTIONS[@]} -gt 0 ]]; then
             for item in "${PNPM_EXCEPTIONS[@]}"; do
                 printf 'minimum-release-age-exclude[]=%s\n' "$item" >> "$pnpm_config"
@@ -2025,12 +2234,12 @@ setup_bun() {
 
 setup_deno() {
     local deno_config="$DENO_CONFIG_PATH"
-    local min_age_minutes
+    local min_age_duration
     local desired_config current_config detail status current
 
-    min_age_minutes=$(deno_min_age_minutes)
+    min_age_duration=$(deno_min_age_duration)
     desired_config=$(build_deno_minimum_dependency_age_config)
-    detail="minimumDependencyAge: ${min_age_minutes}m$(exception_count_suffix "${#DENO_EXCEPTIONS[@]}" "exceptions")"
+    detail="minimumDependencyAge: ${min_age_duration}$(exception_count_suffix "${#DENO_EXCEPTIONS[@]}" "exceptions")"
 
     ensure_file_exists "$deno_config"
     strip_file_if_whitespace_only "$deno_config"
@@ -2048,7 +2257,7 @@ setup_deno() {
     if grep -q '^[[:space:]]*"minimumDependencyAge"[[:space:]]*:' "$deno_config" 2>/dev/null; then
         current=$(grep '^[[:space:]]*"minimumDependencyAge"[[:space:]]*:' "$deno_config" | head -1 | sed 's/.*: *//; s/[",]//g')
         status="updated"
-        detail="${current} --> ${min_age_minutes}m$(exception_count_suffix "${#DENO_EXCEPTIONS[@]}" "exceptions")"
+        detail="${current} --> ${min_age_duration}$(exception_count_suffix "${#DENO_EXCEPTIONS[@]}" "exceptions")"
     fi
 
     upsert_deno_minimum_dependency_age_config "$deno_config" "$desired_config"
@@ -2174,13 +2383,47 @@ setup_vlt() {
     fi
 }
 
+setup_bundler() {
+    local bundler_conf="$BUNDLER_CONFIG_PATH"
+    local desired_line="BUNDLE_COOLDOWN: \"${MIN_AGE_DAYS}\""
+    local detail status current
+
+    ensure_file_exists "$bundler_conf"
+    if ! grep -q '[^[:space:]]' "$bundler_conf" 2>/dev/null; then
+        printf '%s\n' '---' > "$bundler_conf"
+    fi
+
+    if grep -q "^${desired_line}$" "$bundler_conf" 2>/dev/null; then
+        emit_config_status "Bundler" "bundler" "ok" "cooldown = ${MIN_AGE_DAYS}d"
+        SKIPPED_TOOLS+=("bundler")
+        return 0
+    fi
+
+    backup_if_exists "$bundler_conf"
+
+    status="added"
+    detail="cooldown = ${MIN_AGE_DAYS}d"
+    if grep -q '^BUNDLE_COOLDOWN:' "$bundler_conf" 2>/dev/null; then
+        current=$(grep '^BUNDLE_COOLDOWN:' "$bundler_conf" | head -1 | sed 's/^[^:]*: *//; s/"//g')
+        status="updated"
+        detail="${current} --> ${MIN_AGE_DAYS}d"
+    fi
+
+    replace_or_append_line "$bundler_conf" '^BUNDLE_COOLDOWN:' "$desired_line"
+    if verify_and_finalize "$bundler_conf" "bundler" 'BUNDLE_COOLDOWN\|---'; then
+        emit_config_status "Bundler" "bundler" "$status" "$detail"
+    else
+        emit_config_status "Bundler" "bundler" "FAIL" "$detail"
+    fi
+}
+
 remove_pip() {
     local pip_conf="$HOME/.config/pip/pip.conf"
     local current detail
-    local cutoff_timestamp
+    local uploaded_prior_to
 
-    cutoff_timestamp=$(pip_cutoff_timestamp)
-    detail=$(pip_detail_text "$cutoff_timestamp")
+    uploaded_prior_to=$(pip_uploaded_prior_to_value)
+    detail=$(pip_detail_text "$uploaded_prior_to")
 
     if ! grep -q '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" 2>/dev/null \
         && ! grep -q '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" 2>/dev/null; then
@@ -2238,6 +2481,35 @@ remove_uv() {
     cleanup_empty_file "$uv_conf"
 }
 
+remove_poetry() {
+    local poetry_conf="$POETRY_CONFIG_PATH"
+
+    if ! grep -q '^min-release-age[[:space:]]*=' "$poetry_conf" 2>/dev/null \
+        && ! grep -q '^min-release-age-exclude[[:space:]]*=' "$poetry_conf" 2>/dev/null \
+        && ! grep -q '^min-release-age-exclude-source[[:space:]]*=' "$poetry_conf" 2>/dev/null; then
+        emit_config_status "Poetry" "poetry" "ok" "min-release-age settings not present"
+        SKIPPED_TOOLS+=("poetry")
+        return 0
+    fi
+
+    backup_if_exists "$poetry_conf"
+    remove_matching_lines "$poetry_conf" '^min-release-age[[:space:]]*='
+    remove_matching_lines "$poetry_conf" '^min-release-age-exclude[[:space:]]*='
+    remove_matching_lines "$poetry_conf" '^min-release-age-exclude-source[[:space:]]*='
+
+    if grep -q '^\[solver\]' "$poetry_conf" 2>/dev/null && ! section_has_content "$poetry_conf" "[solver]"; then
+        remove_matching_lines "$poetry_conf" '^\\[solver\\]$'
+    fi
+
+    strip_file_if_whitespace_only "$poetry_conf"
+    if verify_and_finalize "$poetry_conf" "poetry" 'min-release-age\|\[solver\]'; then
+        emit_config_status "Poetry" "poetry" "removed" "min-release-age settings"
+    else
+        emit_config_status "Poetry" "poetry" "FAIL" "min-release-age settings"
+    fi
+    cleanup_empty_file "$poetry_conf"
+}
+
 remove_cron_uv() {
     if ! crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
         emit_config_status "uv cron" "uv-cron" "ok" "cron job not present"
@@ -2290,22 +2562,24 @@ remove_npm() {
     local npmrc="$HOME/.npmrc"
     local current
 
-    if ! grep -q '^min-release-age=' "$npmrc" 2>/dev/null; then
+    if ! grep -q '^min-release-age=' "$npmrc" 2>/dev/null \
+        && ! grep -q '^min-release-age-exclude' "$npmrc" 2>/dev/null; then
         emit_config_status "npm" "npm" "ok" "min-release-age not present"
         SKIPPED_TOOLS+=("npm")
         return 0
     fi
 
-    current=$(grep '^min-release-age=' "$npmrc" | head -1 | sed 's/.*=//')
+    current=$(grep '^min-release-age=' "$npmrc" 2>/dev/null | head -1 | sed 's/.*=//' || true)
 
     backup_if_exists "$npmrc"
     remove_matching_lines "$npmrc" '^min-release-age='
+    remove_matching_lines "$npmrc" '^min-release-age-exclude'
 
     strip_file_if_whitespace_only "$npmrc"
     if verify_and_finalize "$npmrc" "npm" 'min-release-age'; then
-        emit_config_status "npm" "npm" "removed" "min-release-age=$current"
+        emit_config_status "npm" "npm" "removed" "min-release-age=${current:-unset}"
     else
-        emit_config_status "npm" "npm" "FAIL" "min-release-age=$current"
+        emit_config_status "npm" "npm" "FAIL" "min-release-age=${current:-unset}"
     fi
     cleanup_empty_file "$npmrc"
 }
@@ -2317,7 +2591,7 @@ remove_pnpm() {
     if ! grep -q '^minimumReleaseAge:' "$pnpm_config" 2>/dev/null \
         && ! grep -q '^minimumReleaseAgeExclude:' "$pnpm_config" 2>/dev/null \
         && ! grep -q '^minimum-release-age=' "$pnpm_config" 2>/dev/null \
-        && ! grep -q '^minimum-release-age-exclude\[\]=' "$pnpm_config" 2>/dev/null; then
+        && ! grep -q '^minimum-release-age-exclude' "$pnpm_config" 2>/dev/null; then
         emit_config_status "pnpm" "pnpm" "ok" "minimum-release-age settings not present"
         SKIPPED_TOOLS+=("pnpm")
         return 0
@@ -2327,7 +2601,7 @@ remove_pnpm() {
     remove_yaml_top_level_key "$pnpm_config" "minimumReleaseAge"
     remove_yaml_top_level_key "$pnpm_config" "minimumReleaseAgeExclude"
     remove_matching_lines "$pnpm_config" '^minimum-release-age='
-    remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude\\[\\]='
+    remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude'
 
     strip_file_if_whitespace_only "$pnpm_config"
     if verify_and_finalize "$pnpm_config" "pnpm" 'minimumReleaseAge\|minimum-release-age'; then
@@ -2457,28 +2731,58 @@ remove_vlt() {
     cleanup_empty_file "$VLT_CONFIG_PATH"
 }
 
+remove_bundler() {
+    local bundler_conf="$BUNDLER_CONFIG_PATH"
+    local current
+
+    if ! grep -q '^BUNDLE_COOLDOWN:' "$bundler_conf" 2>/dev/null; then
+        emit_config_status "Bundler" "bundler" "ok" "cooldown not present"
+        SKIPPED_TOOLS+=("bundler")
+        return 0
+    fi
+
+    current=$(grep '^BUNDLE_COOLDOWN:' "$bundler_conf" | head -1 | sed 's/^[^:]*: *//; s/"//g')
+
+    backup_if_exists "$bundler_conf"
+    remove_yaml_top_level_key "$bundler_conf" "BUNDLE_COOLDOWN"
+
+    if verify_and_finalize "$bundler_conf" "bundler" 'BUNDLE_COOLDOWN\|---'; then
+        emit_config_status "Bundler" "bundler" "removed" "cooldown = ${current}d"
+    else
+        emit_config_status "Bundler" "bundler" "FAIL" "cooldown = ${current}d"
+    fi
+    cleanup_yaml_marker_only_file "$bundler_conf"
+}
+
 validate_configs() {
     local pip_conf="$HOME/.config/pip/pip.conf"
     local uv_conf="$HOME/.config/uv/uv.toml"
+    local poetry_conf="$POETRY_CONFIG_PATH"
     local npmrc="$HOME/.npmrc"
     local pnpm_config
     local bunfig="$HOME/.bunfig.toml"
     local deno_config="$DENO_CONFIG_PATH"
     local yarnrc="$HOME/.yarnrc"
     local yarnrc_yml="$HOME/.yarnrc.yml"
+    local bundler_conf="$BUNDLER_CONFIG_PATH"
     local expected_vlt_before="\"before\": \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
-    local expected_pip_line="uploaded-prior-to = $(pip_cutoff_timestamp)"
-    local expected_uv_date="exclude-newer = \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
+    local expected_pip_line="uploaded-prior-to = $(pip_uploaded_prior_to_value)"
+    local expected_uv_date="exclude-newer = \"P${MIN_AGE_DAYS}D\""
+    local expected_poetry_age="min-release-age = ${MIN_AGE_DAYS}"
     local expected_pnpm_age="minimum-release-age=$(( MIN_AGE_DAYS * 1440 ))"
     local expected_bun_age="minimumReleaseAge = $(( MIN_AGE_DAYS * 86400 ))"
     local expected_deno_config
     local expected_yarn_v1_age="cache-min $(( MIN_AGE_DAYS * 86400 ))"
     local expected_yarn_v2_age="npmMinimalAgeGate: $(yaml_quote "${MIN_AGE_DAYS}d")"
+    local expected_bundler_age="BUNDLE_COOLDOWN: \"${MIN_AGE_DAYS}\""
     local expected_uv_exceptions=""
+    local expected_poetry_exceptions=""
+    local expected_poetry_source_exceptions=""
+    local expected_npm_exceptions=""
     local expected_bun_exceptions=""
     local expected_yarn_exceptions=""
     local expected_pnpm_exceptions=""
-    local current_exceptions item
+    local current_exceptions current_source_exceptions item
     local current_deno_config
 
     pnpm_config=$(pnpm_active_config_path)
@@ -2490,6 +2794,20 @@ validate_configs() {
 
     if [[ ${#UV_EXCEPTIONS[@]} -gt 0 ]]; then
         expected_uv_exceptions=$(build_uv_exception_line)
+    fi
+    if [[ ${#POETRY_EXCEPTIONS[@]} -gt 0 ]]; then
+        expected_poetry_exceptions="min-release-age-exclude = $(toml_quote "$(comma_join "${POETRY_EXCEPTIONS[@]}")")"
+    fi
+    if [[ ${#POETRY_SOURCE_EXCEPTIONS[@]} -gt 0 ]]; then
+        expected_poetry_source_exceptions="min-release-age-exclude-source = $(toml_quote "$(comma_join "${POETRY_SOURCE_EXCEPTIONS[@]}")")"
+    fi
+    if [[ ${#NPM_EXCEPTIONS[@]} -gt 0 ]]; then
+        for item in "${NPM_EXCEPTIONS[@]}"; do
+            expected_npm_exceptions+=$'min-release-age-exclude[]='
+            expected_npm_exceptions+="$item"
+            expected_npm_exceptions+=$'\n'
+        done
+        expected_npm_exceptions=${expected_npm_exceptions%$'\n'}
     fi
     if [[ ${#BUN_EXCEPTIONS[@]} -gt 0 ]]; then
         expected_bun_exceptions="minimumReleaseAgeExcludes = $(toml_array "${BUN_EXCEPTIONS[@]}")"
@@ -2533,23 +2851,39 @@ validate_configs() {
         record_validation_skip "uv" "config not present" "uv"
     fi
 
+    if [[ -f "$poetry_conf" ]]; then
+        current_exceptions=$(current_lines_or_empty "$poetry_conf" '^min-release-age-exclude[[:space:]]*=')
+        current_source_exceptions=$(current_lines_or_empty "$poetry_conf" '^min-release-age-exclude-source[[:space:]]*=')
+        if grep -Fqx "$expected_poetry_age" "$poetry_conf" 2>/dev/null \
+            && [[ "$current_exceptions" == "$expected_poetry_exceptions" ]] \
+            && [[ "$current_source_exceptions" == "$expected_poetry_source_exceptions" ]]; then
+            record_validation_ok "Poetry" "min-release-age settings match" "poetry"
+        else
+            record_validation_fail "Poetry" "min-release-age settings do not match" "poetry"
+        fi
+    else
+        record_validation_skip "Poetry" "config not present" "poetry"
+    fi
+
     if [[ -f "$npmrc" ]]; then
-        if grep -Fqx "min-release-age=${MIN_AGE_DAYS}" "$npmrc" 2>/dev/null; then
+        current_exceptions=$(current_lines_or_empty "$npmrc" '^min-release-age-exclude')
+        if grep -Fqx "min-release-age=${MIN_AGE_DAYS}" "$npmrc" 2>/dev/null \
+            && [[ "$current_exceptions" == "$expected_npm_exceptions" ]]; then
             record_validation_ok "npm" "min-release-age=${MIN_AGE_DAYS}" "npm"
         else
-            record_validation_fail "npm" "expected min-release-age=${MIN_AGE_DAYS}" "npm"
+            record_validation_fail "npm" "min-release-age settings do not match" "npm"
         fi
     else
         record_validation_skip "npm" "config not present" "npm"
     fi
 
     if [[ -f "$PNPM_RC_PATH" && "$pnpm_config" != "$PNPM_RC_PATH" ]] \
-        && { grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null || grep -q '^minimum-release-age-exclude\[\]=' "$PNPM_RC_PATH" 2>/dev/null; }; then
+        && { grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null || grep -q '^minimum-release-age-exclude' "$PNPM_RC_PATH" 2>/dev/null; }; then
         record_validation_fail "pnpm" "legacy rc still has minimum-release-age settings" "pnpm"
     elif [[ -f "$pnpm_config" ]]; then
         current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimumReleaseAgeExclude:')
         if [[ -z "$current_exceptions" ]]; then
-            current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimum-release-age-exclude\[\]=')
+            current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimum-release-age-exclude')
         fi
         if grep -Fqx "$expected_pnpm_age" "$pnpm_config" 2>/dev/null \
             && [[ "$current_exceptions" == "$expected_pnpm_exceptions" ]]; then
@@ -2615,6 +2949,16 @@ validate_configs() {
     else
         record_validation_skip "vlt" "config not present" "vlt"
     fi
+
+    if [[ -f "$bundler_conf" ]]; then
+        if grep -Fqx "$expected_bundler_age" "$bundler_conf" 2>/dev/null; then
+            record_validation_ok "Bundler" "cooldown matches" "bundler"
+        else
+            record_validation_fail "Bundler" "cooldown setting does not match" "bundler"
+        fi
+    else
+        record_validation_skip "Bundler" "config not present" "bundler"
+    fi
 }
 
 main() {
@@ -2648,7 +2992,7 @@ main() {
         printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
         print_separator
 
-        run_remove_tools pip uv uv-cron npm pnpm bun deno yarn-classic yarn-berry vlt vlt-cron
+        run_remove_tools pip uv uv-cron poetry npm pnpm bun deno yarn-classic yarn-berry vlt vlt-cron bundler
 
         echo ""
         echo "  Summary"
@@ -2714,7 +3058,8 @@ main() {
 
     setup_pip
     setup_uv
-    setup_cron_uv
+    remove_cron_uv
+    setup_poetry
     setup_npm
     setup_pnpm
     setup_bun
@@ -2723,6 +3068,7 @@ main() {
     setup_yarn_berry
     setup_vlt
     setup_cron_vlt
+    setup_bundler
 
     validate_configs
     print_results_table

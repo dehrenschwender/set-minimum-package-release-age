@@ -8,6 +8,7 @@ PLATFORM_NAME="macOS"
 PNPM_CONFIG_PATH="$HOME/Library/Preferences/pnpm/config.yaml"
 PNPM_RC_PATH="$HOME/Library/Preferences/pnpm/rc"
 VLT_CONFIG_PATH="$HOME/Library/Preferences/vlt/vlt.json"
+POETRY_CONFIG_PATH="$HOME/Library/Application Support/pypoetry/config.toml"
 
 platform_date_days_ago_rfc3339() {
     date -v-"$1"d +%Y-%m-%dT00:00:00Z

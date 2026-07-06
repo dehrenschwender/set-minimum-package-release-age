@@ -109,6 +109,8 @@ load_common_library() {
     PNPM_RC_PATH="${2:-$HOME/.config/pnpm/rc}"
     PNPM_CONFIG_PATH="${3:-$HOME/.config/pnpm/config.yaml}"
     VLT_CONFIG_PATH="${4:-$HOME/.config/vlt/vlt.json}"
+    POETRY_CONFIG_PATH="${5:-$HOME/.config/pypoetry/config.toml}"
+    BUNDLER_CONFIG_PATH="${6:-$HOME/.bundle/config}"
 
     platform_date_days_ago_rfc3339() {
         printf '%s\n' "${TEST_FIXED_RFC3339:-2026-03-29T00:00:00Z}"
@@ -196,12 +198,16 @@ install_fake_detection_tools() {
     local npm_version="${3:-11.10.0}"
     local pnpm_version="${4:-10.19.0}"
     local bun_version="${5:-1.3.2}"
-    local uv_version="${6:-0.7.0}"
-    local pip_version="${7:-26.0}"
+    local uv_version="${6:-0.11.24}"
+    local pip_version="${7:-26.1}"
     local include_vlt="${8:-1}"
     local vlt_version="${9:-0.0.0}"
     local include_deno="${10:-1}"
     local deno_version="${11:-2.8.0}"
+    local include_poetry="${12:-1}"
+    local poetry_version="${13:-2.4.0}"
+    local include_bundler="${14:-1}"
+    local bundler_version="${15:-4.0.13}"
 
     cat > "$TEST_BIN_DIR/pip3" <<EOF
 #!/usr/bin/env bash
@@ -264,6 +270,40 @@ printf 'yarn test binary\n'
 EOF
 
     chmod +x "$TEST_BIN_DIR/pip3" "$TEST_BIN_DIR/uv" "$TEST_BIN_DIR/npm" "$TEST_BIN_DIR/pnpm" "$TEST_BIN_DIR/yarn"
+
+    if [[ "$include_poetry" == "1" ]]; then
+        cat > "$TEST_BIN_DIR/poetry" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf 'Poetry (version %s)\n' "$poetry_version"
+    exit 0
+fi
+
+printf 'poetry test binary\n'
+EOF
+        chmod +x "$TEST_BIN_DIR/poetry"
+    else
+        rm -f "$TEST_BIN_DIR/poetry"
+    fi
+
+    if [[ "$include_bundler" == "1" ]]; then
+        cat > "$TEST_BIN_DIR/bundle" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf 'Bundler version %s\n' "$bundler_version"
+    exit 0
+fi
+
+printf 'bundle test binary\n'
+EOF
+        chmod +x "$TEST_BIN_DIR/bundle"
+    else
+        rm -f "$TEST_BIN_DIR/bundle"
+    fi
 
     if [[ "$include_bun" == "1" ]]; then
         cat > "$TEST_BIN_DIR/bun" <<EOF
@@ -328,7 +368,7 @@ install_fake_validation_tools() {
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "--version" ]]; then
-    printf 'pip 26.0 from %s\n' "$0"
+    printf 'pip 26.1 from %s\n' "$0"
 elif [[ "${1:-}" == "config" && "${2:-}" == "list" ]]; then
     printf 'install.uploaded-prior-to='\''2026-03-29T00:00:00Z'\''\n'
 else
@@ -340,9 +380,9 @@ EOF
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "--version" ]]; then
-    printf 'uv 0.7.0\n'
+    printf 'uv 0.11.24\n'
 elif [[ "${1:-}" == "self" && "${2:-}" == "version" ]]; then
-    printf 'uv 0.7.0\n'
+    printf 'uv 0.11.24\n'
 else
     exit 1
 fi
