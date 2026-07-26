@@ -18,6 +18,10 @@ test_macos_wrapper() {
     assert_file_contains "$HOME/Library/Application Support/pypoetry/config.toml" "min-release-age = 6"
     assert_file_contains "$HOME/Library/Preferences/pnpm/config.yaml" "minimumReleaseAge: 8640"
     assert_file_contains "$HOME/.yarnrc.yml" "npmPreapprovedPackages: ['@myorg/*']"
+    assert_file_contains "$HOME/.config/set-package-min-age/deno.sh" "--minimum-dependency-age=P6D"
+    assert_file_contains "$HOME/.config/set-package-min-age/pixi.sh" '--exclude-newer "6d"'
+    assert_file_contains "$HOME/.zshrc" "set-package-min-age/deno.sh"
+    assert_file_contains "$HOME/.bashrc" "set-package-min-age/pixi.sh"
     assert_file_contains "$HOME/Library/Preferences/vlt/vlt.json" '"before": "2026-03-29T00:00:00Z"'
     assert_file_contains "$HOME/.bundle/config" 'BUNDLE_COOLDOWN: "6"'
     cleanup_test_env
