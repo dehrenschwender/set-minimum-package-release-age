@@ -38,7 +38,7 @@ The repo now uses a shared core library plus thin platform wrappers:
 | `yarn classic (v1)` | no | no | `cache-min` TTL workaround | yes | no |
 | `yarn berry (v2+)` | yes | yes | no | yes | yes |
 | `vlt` | yes | no | no | yes | no documented minimum |
-| `Bundler` | yes | no | no | yes | yes |
+| `Bundler` | yes | no | no | yes | warning |
 
 ## Version Notes
 
@@ -54,7 +54,7 @@ The repo now uses a shared core library plus thin platform wrappers:
 - `bun` `minimumReleaseAge` / `minimumReleaseAgeExcludes` require Bun `1.3.0+`.
 - `deno` `minimumDependencyAge` requires Deno `2.6.0+`.
 - `vlt` uses `before`; the current implementation supports the config, but this repo does not pin an official minimum introducing version.
-- `Bundler` `cooldown` requires Bundler `4.0.13+`.
+- `Bundler` `cooldown` requires Bundler `4.0.13+`; older or unknown installed Bundler versions warn but do not stop the script, and the config is still written for use after Bundler is upgraded.
 - Yarn Classic only supports `cache-min`, which is a cache freshness workaround rather than native publish-date filtering.
 
 ## Usage
@@ -172,10 +172,10 @@ For each supported tool, the script:
 2. Backs up the existing config before modifying it.
 3. Adds or updates the age-gate setting using the unit each tool expects.
 4. Adds native exception settings where that package manager supports them.
-5. Runs a preflight version check for installed tools whose native age-gate features have documented minimum versions.
+5. Runs a preflight version check for installed tools whose native age-gate features have documented minimum versions. Unsupported installed versions are fatal except Bundler, where older system installs warn while the managed config is still written.
 6. Validates every supported tool by checking the config written for that tool.
 7. Diffs the modified file against the backup and rolls back unexpected changes.
-8. Prints tool readiness with detected binary paths, then a merged results table covering both config changes and validation status.
+8. Prints tool readiness with detected binary paths, streams live progress while applying and validating settings, then prints a merged results table covering both config changes and validation status.
 
 `pip` is written as a relative `uploaded-prior-to = P7D` value under `[install]`.
 

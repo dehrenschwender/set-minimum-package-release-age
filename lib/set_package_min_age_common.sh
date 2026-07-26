@@ -327,6 +327,10 @@ print_results_status() {
     printf "  %-16s %-10s %-12s %s\n" "$1" "$2" "$3" "$4"
 }
 
+print_progress_status() {
+    printf "  %-16s %-10s %-10s %s\n" "$1" "$2" "$3" "$4"
+}
+
 result_tool_display_name() {
     case "$1" in
         pip) printf '%s\n' "pip" ;;
@@ -403,6 +407,7 @@ emit_config_status() {
 
     if [[ "$NORMAL_MODE_REPORTING" == true ]]; then
         record_result_config "$tool_key" "$status" "$detail"
+        print_progress_status "$tool_display" "config" "$status" "$detail"
         return 0
     fi
 
@@ -417,10 +422,23 @@ emit_validation_status() {
 
     if [[ "$NORMAL_MODE_REPORTING" == true ]]; then
         record_result_validation "$tool_key" "$status" "$detail"
+        print_progress_status "$tool_display" "validate" "$status" "$detail"
         return 0
     fi
 
     print_status "$tool_display" "$status" "$detail"
+}
+
+run_progress_step() {
+    local tool_key="$1"
+    local step="$2"
+    shift 2
+
+    if [[ "$NORMAL_MODE_REPORTING" == true ]]; then
+        print_progress_status "$(result_tool_display_name "$tool_key")" "$step" "start" "$(tool_config_path "$tool_key")"
+    fi
+
+    "$@"
 }
 
 print_results_table() {
@@ -739,6 +757,15 @@ record_preflight_skip() {
     local path="$4"
     local detail="$5"
     print_readiness_status "$tool" "$installed" "$version" "$path" "--" "$detail"
+}
+
+record_preflight_warn() {
+    local tool="$1"
+    local installed="$2"
+    local version="$3"
+    local path="$4"
+    local detail="$5"
+    print_readiness_status "$tool" "$installed" "$version" "$path" "warn" "$detail"
 }
 
 record_preflight_fail() {
@@ -1765,13 +1792,11 @@ run_preflight_checks() {
     path=$(lookup_detected_tool_field "Bundler" path)
     if [[ "$installed" == "yes" ]]; then
         if [[ -z "$version" || "$version" == "unknown" ]]; then
-            record_preflight_fail "Bundler" "$installed" "$version" "$path" "cooldown requires version detection; installed version could not be determined" "bundler"
-            status=1
+            record_preflight_warn "Bundler" "$installed" "$version" "$path" "cooldown requires version detection; config can still be written"
         elif version_gte "$version" "4.0.13"; then
             record_preflight_ok "Bundler" "$installed" "$version" "$path" "cooldown requires >= 4.0.13"
         else
-            record_preflight_fail "Bundler" "$installed" "$version" "$path" "cooldown requires >= 4.0.13" "bundler"
-            status=1
+            record_preflight_warn "Bundler" "$installed" "$version" "$path" "cooldown requires >= 4.0.13; config can still be written"
         fi
     else
         record_preflight_skip "Bundler" "$installed" "$version" "$path" "not installed; config can still be written"
@@ -3056,21 +3081,28 @@ main() {
     NORMAL_MODE_REPORTING=true
     init_results_table
 
-    setup_pip
-    setup_uv
-    remove_cron_uv
-    setup_poetry
-    setup_npm
-    setup_pnpm
-    setup_bun
-    setup_deno
-    setup_yarn_classic
-    setup_yarn_berry
-    setup_vlt
-    setup_cron_vlt
-    setup_bundler
+    echo "  Progress"
+    print_separator
+    print_progress_status "TOOL" "STEP" "STATUS" "DETAIL"
+    print_separator
 
+    run_progress_step pip config setup_pip
+    run_progress_step uv config setup_uv
+    run_progress_step uv-cron cleanup remove_cron_uv
+    run_progress_step poetry config setup_poetry
+    run_progress_step npm config setup_npm
+    run_progress_step pnpm config setup_pnpm
+    run_progress_step bun config setup_bun
+    run_progress_step deno config setup_deno
+    run_progress_step yarn-classic config setup_yarn_classic
+    run_progress_step yarn-berry config setup_yarn_berry
+    run_progress_step vlt config setup_vlt
+    run_progress_step vlt-cron config setup_cron_vlt
+    run_progress_step bundler config setup_bundler
+
+    print_progress_status "all tools" "validate" "start" "checking managed config files"
     validate_configs
+    echo ""
     print_results_table
     NORMAL_MODE_REPORTING=false
 

@@ -840,9 +840,10 @@ test_preflight_deno_version_failure() {
     cleanup_test_env
 }
 
-test_preflight_bundler_version_failure() {
+test_preflight_bundler_version_warning() {
     setup_test_env
     install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "0.0.0" 1 "2.8.0" 1 "2.4.0" 1 "4.0.12"
+    install_fake_crontab
     load_common_library
 
     local output status
@@ -851,9 +852,10 @@ test_preflight_bundler_version_failure() {
     status=$?
     set -e
 
-    assert_eq 1 "$status"
+    assert_eq 0 "$status"
     assert_contains "$output" "cooldown requires >= 4.0.13"
-    assert_not_exists "$BUNDLER_CONFIG_PATH"
+    assert_contains "$output" "warn"
+    assert_file_contains "$BUNDLER_CONFIG_PATH" 'BUNDLE_COOLDOWN: "4"'
     cleanup_test_env
 }
 
@@ -894,7 +896,10 @@ test_main_output_includes_readiness_and_results() {
     assert_contains "$output" "minimum age: 4 days"
     assert_contains "$output" "Tool readiness"
     assert_contains "$output" "PATH"
+    assert_contains "$output" "Progress"
     assert_contains "$output" "Results"
+    assert_contains "$output" "pip              config     start"
+    assert_contains "$output" "all tools        validate   start"
     assert_contains "$output" "pip              yes        26.1"
     assert_contains "$output" "$TEST_BIN_DIR/pip3"
     assert_contains "$output" "uploaded-prior-to duration requires >= 26.1.0"
@@ -918,6 +923,8 @@ test_main_output_includes_readiness_and_results() {
     assert_contains "$output" "before = 2026-03-29T00:00:00Z (4d window) | before matches"
     assert_contains "$output" "cooldown = 4d | cooldown matches"
     assert_before "$output" "Tool readiness" "Results"
+    assert_before "$output" "Tool readiness" "Progress"
+    assert_before "$output" "Progress" "Results"
     [[ "$output" != *"Configuration"* ]] || fail "did not expect Configuration section"
     [[ "$output" != *"Validation"* ]] || fail "did not expect Validation section"
     [[ "$output" != *"uv exceptions"* ]] || fail "did not expect separate uv exceptions row"
@@ -1113,7 +1120,7 @@ run_test "preflight_pnpm_pattern_exception_version_failure" test_preflight_pnpm_
 run_test "preflight_pnpm_version_selector_failure" test_preflight_pnpm_version_selector_failure || true
 run_test "preflight_bun_version_failure" test_preflight_bun_version_failure || true
 run_test "preflight_deno_version_failure" test_preflight_deno_version_failure || true
-run_test "preflight_bundler_version_failure" test_preflight_bundler_version_failure || true
+run_test "preflight_bundler_version_warning" test_preflight_bundler_version_warning || true
 run_test "preflight_yarn_berry_version_failure" test_preflight_yarn_berry_version_failure || true
 run_test "main_output_includes_readiness_and_results" test_main_output_includes_readiness_and_results || true
 run_test "main_remove_output_includes_tool_overview" test_main_remove_output_includes_tool_overview || true
