@@ -17,6 +17,10 @@ test_linux_wrapper() {
     assert_contains "$output" "set-minimum-package-release-age (Linux)"
     assert_file_contains "$HOME/.config/pnpm/rc" "minimum-release-age=4320"
     assert_file_contains "$HOME/.config/pnpm/rc" "minimum-release-age-exclude[]=webpack"
+    assert_file_contains "$HOME/.config/set-package-min-age/deno.sh" "--minimum-dependency-age=P3D"
+    assert_file_contains "$HOME/.config/set-package-min-age/pixi.sh" '--exclude-newer "3d"'
+    assert_file_contains "$HOME/.zshrc" "set-package-min-age/deno.sh"
+    assert_file_contains "$HOME/.bashrc" "set-package-min-age/pixi.sh"
     cleanup_test_env
 }
 

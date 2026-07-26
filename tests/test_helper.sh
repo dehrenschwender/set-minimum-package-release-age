@@ -190,6 +190,8 @@ install_fake_detection_tools() {
     local bun_version="${5:-1.3.2}"
     local uv_version="${6:-0.7.0}"
     local pip_version="${7:-26.0}"
+    local deno_version="${8:-2.5.5}"
+    local pixi_version="${9:-0.40.0}"
 
     cat > "$TEST_BIN_DIR/pip3" <<EOF
 #!/usr/bin/env bash
@@ -251,7 +253,31 @@ fi
 printf 'yarn test binary\n'
 EOF
 
-    chmod +x "$TEST_BIN_DIR/pip3" "$TEST_BIN_DIR/uv" "$TEST_BIN_DIR/npm" "$TEST_BIN_DIR/pnpm" "$TEST_BIN_DIR/yarn"
+    cat > "$TEST_BIN_DIR/deno" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf 'deno %s\n' "$deno_version"
+    exit 0
+fi
+
+printf 'deno test binary\n'
+EOF
+
+    cat > "$TEST_BIN_DIR/pixi" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf 'pixi %s\n' "$pixi_version"
+    exit 0
+fi
+
+printf 'pixi test binary\n'
+EOF
+
+    chmod +x "$TEST_BIN_DIR/pip3" "$TEST_BIN_DIR/uv" "$TEST_BIN_DIR/npm" "$TEST_BIN_DIR/pnpm" "$TEST_BIN_DIR/yarn" "$TEST_BIN_DIR/deno" "$TEST_BIN_DIR/pixi"
 
     if [[ "$include_bun" == "1" ]]; then
         cat > "$TEST_BIN_DIR/bun" <<EOF
@@ -275,8 +301,10 @@ install_fake_validation_tools() {
     local yarn_version="${1:-1.22.22}"
     local npm_version="${2:-11.10.0}"
     local pnpm_version="${3:-10.19.0}"
+    local deno_version="${4:-2.5.5}"
+    local pixi_version="${5:-0.40.0}"
 
-    install_fake_detection_tools "$yarn_version" 1 "$npm_version" "$pnpm_version"
+    install_fake_detection_tools "$yarn_version" 1 "$npm_version" "$pnpm_version" "" "" "" "$deno_version" "$pixi_version"
 
     cat > "$TEST_BIN_DIR/pip3" <<'EOF'
 #!/usr/bin/env bash

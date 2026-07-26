@@ -27,6 +27,8 @@ prepare_scoped_remove_fixtures() {
     setup_bun
     setup_yarn_classic
     setup_yarn_berry
+    setup_deno
+    setup_pixi
 }
 
 test_usage() {
@@ -403,6 +405,118 @@ test_setup_remove_yarn_classic() {
     cleanup_test_env
 }
 
+test_setup_remove_deno() {
+    setup_test_env
+    load_common_library
+    parse_args 9
+
+    local wrapper="$HOME/.config/set-package-min-age/deno.sh"
+    local zshrc="$HOME/.zshrc"
+    local bashrc="$HOME/.bashrc"
+
+    setup_deno
+    assert_file_contains "$wrapper" "$DENO_WRAPPER_MARKER"
+    assert_file_contains "$wrapper" "# minimum-release-age: 9d"
+    assert_file_contains "$wrapper" "--minimum-dependency-age=P9D"
+    assert_file_contains "$zshrc" "$DENO_WRAPPER_MARKER"
+    assert_file_contains "$zshrc" "set-package-min-age/deno.sh"
+    assert_file_contains "$bashrc" "$DENO_WRAPPER_MARKER"
+
+    reset_status_arrays
+    setup_deno
+    assert_array_contains "deno" "${SKIPPED_TOOLS[@]-}"
+
+    parse_args 14
+    reset_status_arrays
+    setup_deno
+    assert_file_contains "$wrapper" "# minimum-release-age: 14d"
+    assert_file_contains "$wrapper" "--minimum-dependency-age=P14D"
+    assert_array_contains "deno" "${UPDATED_TOOLS[@]-}"
+    local zshrc_marker_count
+    zshrc_marker_count=$(grep -Fxc "$DENO_WRAPPER_MARKER" "$zshrc")
+    assert_eq "1" "$zshrc_marker_count"
+
+    reset_status_arrays
+    remove_deno
+    assert_not_exists "$wrapper"
+    assert_file_not_contains "$zshrc" "$DENO_WRAPPER_MARKER"
+    assert_file_not_contains "$bashrc" "$DENO_WRAPPER_MARKER"
+    assert_array_contains "deno" "${UPDATED_TOOLS[@]-}"
+
+    reset_status_arrays
+    remove_deno
+    assert_array_contains "deno" "${SKIPPED_TOOLS[@]-}"
+    cleanup_test_env
+}
+
+test_setup_remove_pixi() {
+    setup_test_env
+    load_common_library
+    parse_args 5
+
+    local wrapper="$HOME/.config/set-package-min-age/pixi.sh"
+    local zshrc="$HOME/.zshrc"
+
+    setup_pixi
+    assert_file_contains "$wrapper" "$PIXI_WRAPPER_MARKER"
+    assert_file_contains "$wrapper" "# minimum-release-age: 5d"
+    assert_file_contains "$wrapper" '--exclude-newer "5d"'
+    assert_file_contains "$zshrc" "$PIXI_WRAPPER_MARKER"
+    assert_file_contains "$zshrc" "set-package-min-age/pixi.sh"
+
+    reset_status_arrays
+    setup_pixi
+    assert_array_contains "pixi" "${SKIPPED_TOOLS[@]-}"
+
+    reset_status_arrays
+    remove_pixi
+    assert_not_exists "$wrapper"
+    assert_file_not_contains "$zshrc" "$PIXI_WRAPPER_MARKER"
+    cleanup_test_env
+}
+
+test_setup_deno_preserves_unrelated_rc_content() {
+    setup_test_env
+    load_common_library
+    parse_args 7
+
+    local zshrc="$HOME/.zshrc"
+    local bashrc="$HOME/.bashrc"
+    printf 'export PATH="$HOME/bin:$PATH"\nalias ll="ls -al"\n' > "$zshrc"
+    printf 'export EDITOR=vim\n' > "$bashrc"
+
+    setup_deno
+    assert_file_contains "$zshrc" 'export PATH="$HOME/bin:$PATH"'
+    assert_file_contains "$zshrc" 'alias ll="ls -al"'
+    assert_file_contains "$zshrc" "$DENO_WRAPPER_MARKER"
+    assert_file_contains "$bashrc" 'export EDITOR=vim'
+
+    reset_status_arrays
+    remove_deno
+    assert_file_contains "$zshrc" 'export PATH="$HOME/bin:$PATH"'
+    assert_file_contains "$zshrc" 'alias ll="ls -al"'
+    assert_file_not_contains "$zshrc" "$DENO_WRAPPER_MARKER"
+    assert_file_contains "$bashrc" 'export EDITOR=vim'
+    cleanup_test_env
+}
+
+test_preflight_deno_version_failure() {
+    setup_test_env
+    install_fake_detection_tools "4.10.0" 0 "11.10.0" "10.19.0" "1.3.2" "0.7.0" "26.0" "2.5.4"
+    load_common_library
+
+    local output status
+    set +e
+    output=$(main 4 2>&1)
+    status=$?
+    set -e
+
+    assert_eq 1 "$status"
+    assert_contains "$output" "minimumDependencyAge requires >= 2.5.5"
+    assert_not_exists "$HOME/.config/set-package-min-age/deno.sh"
+    cleanup_test_env
+}
+
 test_setup_remove_yarn_berry() {
     setup_test_env
     load_common_library
@@ -440,6 +554,8 @@ test_validate_configs() {
     setup_bun
     setup_yarn_classic
     setup_yarn_berry
+    setup_deno
+    setup_pixi
 
     validate_configs
     assert_array_contains "pip" "${VALIDATED_TOOLS[@]-}"
@@ -449,6 +565,8 @@ test_validate_configs() {
     assert_array_contains "bun" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "yarn-classic" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "yarn-berry" "${VALIDATED_TOOLS[@]-}"
+    assert_array_contains "deno" "${VALIDATED_TOOLS[@]-}"
+    assert_array_contains "pixi" "${VALIDATED_TOOLS[@]-}"
 
     cleanup_test_env
 
@@ -720,6 +838,34 @@ test_scoped_remove_only_yarn_berry() {
     cleanup_test_env
 }
 
+test_scoped_remove_only_deno() {
+    setup_test_env
+    prepare_scoped_remove_fixtures
+    install_fake_detection_tools "4.10.0"
+
+    main --remove-tool deno >/dev/null
+
+    assert_not_exists "$HOME/.config/set-package-min-age/deno.sh"
+    assert_exists "$HOME/.config/set-package-min-age/pixi.sh"
+    assert_file_not_contains "$HOME/.zshrc" "$DENO_WRAPPER_MARKER"
+    assert_file_contains "$HOME/.zshrc" "$PIXI_WRAPPER_MARKER"
+    cleanup_test_env
+}
+
+test_scoped_remove_only_pixi() {
+    setup_test_env
+    prepare_scoped_remove_fixtures
+    install_fake_detection_tools "4.10.0"
+
+    main --remove-tool pixi >/dev/null
+
+    assert_not_exists "$HOME/.config/set-package-min-age/pixi.sh"
+    assert_exists "$HOME/.config/set-package-min-age/deno.sh"
+    assert_file_not_contains "$HOME/.zshrc" "$PIXI_WRAPPER_MARKER"
+    assert_file_contains "$HOME/.zshrc" "$DENO_WRAPPER_MARKER"
+    cleanup_test_env
+}
+
 run_test "usage" test_usage || true
 run_test "parse_args_success" test_parse_args_success || true
 run_test "parse_args_failures" test_parse_args_failures || true
@@ -733,6 +879,10 @@ run_test "setup_remove_pnpm" test_setup_remove_pnpm || true
 run_test "setup_remove_bun" test_setup_remove_bun || true
 run_test "setup_remove_yarn_classic" test_setup_remove_yarn_classic || true
 run_test "setup_remove_yarn_berry" test_setup_remove_yarn_berry || true
+run_test "setup_remove_deno" test_setup_remove_deno || true
+run_test "setup_remove_pixi" test_setup_remove_pixi || true
+run_test "setup_deno_preserves_unrelated_rc_content" test_setup_deno_preserves_unrelated_rc_content || true
+run_test "preflight_deno_version_failure" test_preflight_deno_version_failure || true
 run_test "validate_configs" test_validate_configs || true
 run_test "print_tool_overview_yarn_v1" test_print_tool_overview_yarn_v1 || true
 run_test "print_tool_overview_yarn_berry" test_print_tool_overview_yarn_berry || true
@@ -750,5 +900,7 @@ run_test "scoped_remove_only_uv" test_scoped_remove_only_uv || true
 run_test "scoped_remove_only_uv_cron" test_scoped_remove_only_uv_cron || true
 run_test "scoped_remove_uv_and_uv_cron" test_scoped_remove_uv_and_uv_cron || true
 run_test "scoped_remove_only_yarn_berry" test_scoped_remove_only_yarn_berry || true
+run_test "scoped_remove_only_deno" test_scoped_remove_only_deno || true
+run_test "scoped_remove_only_pixi" test_scoped_remove_only_pixi || true
 
 finish_tests

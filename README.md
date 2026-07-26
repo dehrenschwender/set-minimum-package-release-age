@@ -14,11 +14,13 @@ The repo now uses a shared core library plus thin platform wrappers:
 |---|---|---|---|
 | Python | `pip` | upload-time age gate via `uploaded-prior-to` | `~/.config/pip/pip.conf` |
 | Python | `uv` | native age gate + per-package exceptions | `~/.config/uv/uv.toml` |
+| Python | `pixi` | shell wrapper injecting `--exclude-newer` (no user-level config exists) | `~/.config/set-package-min-age/pixi.sh` (sourced from `~/.zshrc` and `~/.bashrc`) |
 | JavaScript | `npm` | native age gate | `~/.npmrc` |
 | JavaScript | `pnpm` | native age gate + selectors to exclude | `~/.config/pnpm/rc` (Linux) / `~/Library/Preferences/pnpm/rc` (macOS) |
 | JavaScript | `bun` | native age gate + package excludes | `~/.bunfig.toml` |
 | JavaScript | `yarn classic (v1)` | cache TTL workaround, not a true publish-age gate | `~/.yarnrc` |
 | JavaScript | `yarn berry (v2+)` | native age gate + preapproved package patterns | `~/.yarnrc.yml` |
+| JavaScript / Multi | `deno` | shell wrapper injecting `--minimum-dependency-age` (no user-level config exists) | `~/.config/set-package-min-age/deno.sh` (sourced from `~/.zshrc` and `~/.bashrc`) |
 
 ## Feature Matrix
 
@@ -31,6 +33,8 @@ The repo now uses a shared core library plus thin platform wrappers:
 | `bun` | yes | yes | no | yes | no documented minimum |
 | `yarn classic (v1)` | no | no | `cache-min` TTL workaround | yes | no |
 | `yarn berry (v2+)` | yes | yes | no | yes | yes |
+| `deno` | yes (CLI flag) | no (`deno.json` only) | shell wrapper around `--minimum-dependency-age` | yes | yes (>= 2.5.5) |
+| `pixi` | yes (CLI flag) | no (`pixi.toml` only) | shell wrapper around `--exclude-newer` | yes | no documented minimum |
 
 ## Version Notes
 
@@ -43,6 +47,8 @@ The repo now uses a shared core library plus thin platform wrappers:
 - `uv` uses `exclude-newer` / `exclude-newer-package`; the current docs confirm support, but this repo does not pin an official minimum introducing version.
 - `bun` uses `minimumReleaseAge` / `minimumReleaseAgeExcludes`; the current docs confirm support, but this repo does not pin an official minimum introducing version.
 - Yarn Classic only supports `cache-min`, which is a cache freshness workaround rather than native publish-date filtering.
+- `deno` `--minimum-dependency-age` requires Deno `2.5.5+`. There is no user-level config file for this setting, so this repo installs a shell wrapper that injects the flag for `deno install`, `deno add`, `deno update`, and `deno outdated`.
+- `pixi` `--exclude-newer` is documented in current pixi releases (relative-duration syntax was added recently); this repo does not pin a minimum version. There is no user-level config file for this setting, so this repo installs a shell wrapper that injects the flag for `pixi install`, `pixi add`, `pixi update`, and `pixi upgrade`.
 
 ## Usage
 
@@ -113,6 +119,8 @@ Use repeatable `--remove-tool` flags to remove settings for only selected manage
 - `bun`
 - `yarn-classic`
 - `yarn-berry`
+- `deno`
+- `pixi`
 
 Examples:
 
@@ -138,6 +146,15 @@ For each supported tool, the script:
 `pip` is written as an absolute `uploaded-prior-to` timestamp under `[install]`.
 
 `uv` is still written with an absolute `exclude-newer` timestamp, so the scripts also manage a daily cron job that refreshes the date.
+
+`deno` and `pixi` are managed as shell wrappers under `~/.config/set-package-min-age/`, sourced by both `~/.zshrc` and `~/.bashrc`. The wrappers shadow the `deno` / `pixi` commands and inject the corresponding `--minimum-dependency-age` / `--exclude-newer` flag for the relevant install/update subcommands. Other subcommands fall through to the real binary unchanged.
+
+### Shell Wrapper Caveats (deno, pixi)
+
+- The wrappers only apply to interactive shells that source `~/.zshrc` or `~/.bashrc`. Non-interactive scripts and other shells (fish, nushell) are not covered.
+- The wrappers can be bypassed deliberately with `command deno ...` / `command pixi ...`.
+- Per-package exceptions are not exposed by the CLI flags; configure those in the project's `deno.json` or `pixi.toml` if needed.
+- A new shell session is required after running the script for the wrappers to take effect (or `source ~/.zshrc` / `source ~/.bashrc` in an existing one).
 
 ## Idempotence
 

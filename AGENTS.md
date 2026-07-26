@@ -15,8 +15,10 @@ Supported tools:
 - `bun`
 - `yarn classic (v1)` as a cache TTL workaround
 - `yarn berry (v2+)` with native age-gate config
+- `deno` via a shell wrapper that injects `--minimum-dependency-age` (no user-level config exists)
+- `pixi` via a shell wrapper that injects `--exclude-newer` (no user-level config exists)
 
-The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `pnpm`, `bun`, and Yarn Berry.
+The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `pnpm`, `bun`, and Yarn Berry. The deno and pixi wrappers do not support `--exception`; those tools only accept per-package exceptions through their project files (`deno.json`, `pixi.toml`).
 
 ## Architecture
 
@@ -64,6 +66,8 @@ Validation is config-based for every supported tool. `validate_configs()` checks
 - `bun`
 - `yarn classic (v1)`
 - `yarn berry (v2+)`
+- `deno` (managed wrapper file + a source line in `~/.zshrc` or `~/.bashrc`)
+- `pixi` (managed wrapper file + a source line in `~/.zshrc` or `~/.bashrc`)
 
 This is intentional: it avoids relying on inconsistent CLI config getters and ensures `bun` is validated too.
 
@@ -87,4 +91,5 @@ The tests use a temporary `HOME`, fake manager binaries, and a fake `crontab`, s
 - Config changes must continue to be verified against backups, with rollback on unexpected diffs.
 - Validation should remain aligned with the exact config lines the scripts manage, including exception entries where supported.
 - Yarn Classic should remain documented as a workaround, not true publish-age enforcement.
+- `deno` and `pixi` should remain documented as shell-wrapper workarounds (parallel to Yarn Classic), since neither package manager exposes a user-level config for this setting; both only support it via project-level config or CLI flag.
 - If a behavior exists in the shared core, test it there instead of duplicating logic in both wrappers.
