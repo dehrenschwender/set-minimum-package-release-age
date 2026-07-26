@@ -12,13 +12,14 @@ Supported tools:
 - `npm`
 - `pnpm`
 - `bun`
-- `deno`
 - `yarn classic (v1)` as a cache TTL workaround
 - `yarn berry (v2+)` with native age-gate config
+- `deno` via a shell wrapper that injects `--minimum-dependency-age` independently of project or npm configuration
+- `pixi` via a shell wrapper that injects `--exclude-newer` (no user-level config exists)
 - `vlt`
 - `Bundler`
 
-The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `Poetry`, `npm`, `pnpm`, `bun`, `deno`, and Yarn Berry.
+The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `Poetry`, `npm`, `pnpm`, `bun`, and Yarn Berry. The Deno and Pixi wrappers do not support `--exception`; those tools only accept per-package exceptions through their project files (`deno.json`, `pixi.toml`).
 
 ## Architecture
 
@@ -41,13 +42,14 @@ Validation is config-based for every supported tool. `validate_configs()` checks
 - `npm`
 - `pnpm`
 - `bun`
-- `deno`
+- `deno` (managed wrapper file + a source line in `~/.zshrc` or `~/.bashrc`)
+- `pixi` (managed wrapper file + a source line in `~/.zshrc` or `~/.bashrc`)
 - `yarn classic (v1)`
 - `yarn berry (v2+)`
 - `vlt`
 - `Bundler`
 
-This is intentional: it avoids relying on inconsistent CLI config getters and ensures every managed config file, including `bun`, `deno`, Poetry, and Bundler, is validated.
+This is intentional: it avoids relying on inconsistent CLI config getters and ensures every managed config file, including `bun`, the Deno and Pixi wrappers, Poetry, and Bundler, is validated.
 
 ## Package Manager Policy
 
@@ -73,6 +75,8 @@ If dependencies are added later:
 - Record major dependency version bumps under `Known Issues / TODOs` for manual review.
 
 ## Last Dependency Update
+
+2026-07-26: Dependency maintenance scan found no dependency-managed ecosystems, manifests, lockfiles, or CI install workflows. Primary documentation review confirmed no additional mainstream package manager with a suitable client-side age gate, corrected Deno's minimum to 2.6.0 and documented its 2.9 default, and set Pixi's minimum to 0.47.0. Bundler's managed cooldown remains available from 4.0.13; older or unknown installed versions warn while the config is still written for a future upgrade.
 
 2026-07-06: Dependency maintenance scan found no dependency-managed ecosystems, manifests, lockfiles, CI install workflows, or Ansible/service dependency surfaces. No package-manager migrations or dependency updates were performed.
 
@@ -103,6 +107,7 @@ Recorded package changes: none recorded.
 - Yarn Classic should remain documented as a workaround, not true publish-age enforcement.
 - Bundler cooldown should remain documented as requiring Bundler `4.0.13+`; unsupported installed Bundler versions should warn rather than block other package-manager configuration.
 - Normal runs should continue to stream progress after readiness so users are not left waiting silently before final results.
+- Deno and Pixi should remain documented as shell-wrapper workarounds. Deno 2.8+ also reads the npm setting from `.npmrc`, but the wrapper preserves an independently managed age on Deno 2.6+; Pixi still has no user-level setting.
 - If a behavior exists in the shared core, test it there instead of duplicating logic in both wrappers.
 
 ## Validation

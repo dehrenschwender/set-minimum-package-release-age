@@ -207,7 +207,8 @@ install_fake_detection_tools() {
     local include_poetry="${12:-1}"
     local poetry_version="${13:-2.4.0}"
     local include_bundler="${14:-1}"
-    local bundler_version="${15:-4.0.13}"
+    local bundler_version="${15:-4.0.15}"
+    local pixi_version="${16:-0.58.0}"
 
     cat > "$TEST_BIN_DIR/pip3" <<EOF
 #!/usr/bin/env bash
@@ -269,7 +270,19 @@ fi
 printf 'yarn test binary\n'
 EOF
 
-    chmod +x "$TEST_BIN_DIR/pip3" "$TEST_BIN_DIR/uv" "$TEST_BIN_DIR/npm" "$TEST_BIN_DIR/pnpm" "$TEST_BIN_DIR/yarn"
+    cat > "$TEST_BIN_DIR/pixi" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "--version" ]]; then
+    printf 'pixi %s\n' "$pixi_version"
+    exit 0
+fi
+
+printf 'pixi test binary\n'
+EOF
+
+    chmod +x "$TEST_BIN_DIR/pip3" "$TEST_BIN_DIR/uv" "$TEST_BIN_DIR/npm" "$TEST_BIN_DIR/pnpm" "$TEST_BIN_DIR/yarn" "$TEST_BIN_DIR/pixi"
 
     if [[ "$include_poetry" == "1" ]]; then
         cat > "$TEST_BIN_DIR/poetry" <<EOF
@@ -361,8 +374,10 @@ install_fake_validation_tools() {
     local yarn_version="${1:-1.22.22}"
     local npm_version="${2:-11.10.0}"
     local pnpm_version="${3:-10.19.0}"
+    local deno_version="${4:-2.9.0}"
+    local pixi_version="${5:-0.58.0}"
 
-    install_fake_detection_tools "$yarn_version" 1 "$npm_version" "$pnpm_version"
+    install_fake_detection_tools "$yarn_version" 1 "$npm_version" "$pnpm_version" "" "" "" 1 "" 1 "$deno_version" 1 "" 1 "" "$pixi_version"
 
     cat > "$TEST_BIN_DIR/pip3" <<'EOF'
 #!/usr/bin/env bash

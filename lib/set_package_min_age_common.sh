@@ -57,7 +57,6 @@ Options:
                           npm:<package-or-glob>
                           pnpm:<selector>
                           bun:<package>
-                          deno:<npm:package-or-jsr:package>
                           yarn-berry:<pattern>
   --remove                Remove all settings previously added by this script.
   --remove-tool TOOL      Remove settings only for a specific managed tool. May be provided
@@ -71,7 +70,6 @@ Examples:
   $(basename "$0") --exception uv:foo=false 14
   $(basename "$0") --exception poetry:internal-lib --exception npm:'@myorg/*'
   $(basename "$0") --exception pnpm:webpack --exception bun:typescript
-  $(basename "$0") --exception deno:npm:chalk --exception deno:jsr:@std/assert
   $(basename "$0") --exception yarn-berry:'@myorg/*'
   $(basename "$0") --remove-tool uv --remove-tool uv-cron
   $(basename "$0") --remove                # Remove all settings
@@ -102,9 +100,10 @@ tool_config_path() {
         npm) printf '%s\n' "$HOME/.npmrc" ;;
         pnpm) pnpm_active_config_path ;;
         bun) printf '%s\n' "$HOME/.bunfig.toml" ;;
-        deno) printf '%s\n' "$DENO_CONFIG_PATH" ;;
         yarn-classic) printf '%s\n' "$HOME/.yarnrc" ;;
         yarn-berry) printf '%s\n' "$HOME/.yarnrc.yml" ;;
+        deno) printf '%s\n' "$HOME/.config/set-package-min-age/deno.sh" ;;
+        pixi) printf '%s\n' "$HOME/.config/set-package-min-age/pixi.sh" ;;
         vlt) printf '%s\n' "$VLT_CONFIG_PATH" ;;
         vlt-cron) printf '%s\n' "crontab entry ($VLT_CRON_MARKER)" ;;
         bundler) printf '%s\n' "$BUNDLER_CONFIG_PATH" ;;
@@ -114,7 +113,7 @@ tool_config_path() {
 
 tool_supports_native_exceptions() {
     case "$1" in
-        uv|poetry|npm|pnpm|bun|deno|yarn-berry) return 0 ;;
+        uv|poetry|npm|pnpm|bun|yarn-berry) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -174,13 +173,6 @@ parse_exception_spec() {
             fi
             BUN_EXCEPTIONS+=("$value")
             ;;
-        deno)
-            if [[ ! "$value" =~ ^(npm|jsr):.+$ ]]; then
-                echo "Error: deno exceptions must start with npm: or jsr:." >&2
-                exit 1
-            fi
-            DENO_EXCEPTIONS+=("$value")
-            ;;
         yarn-berry)
             if [[ -z "$value" ]]; then
                 echo "Error: yarn-berry exceptions require a package pattern." >&2
@@ -188,7 +180,7 @@ parse_exception_spec() {
             fi
             YARN_EXCEPTIONS+=("$value")
             ;;
-        pip|yarn-classic|vlt|bundler)
+        pip|yarn-classic|deno|pixi|vlt|bundler)
             echo "Error: $target does not support native exceptions." >&2
             exit 1
             ;;
@@ -203,7 +195,7 @@ parse_remove_tool() {
     local tool="$1"
 
     case "$tool" in
-        pip|uv|uv-cron|poetry|npm|pnpm|bun|deno|yarn-classic|yarn-berry|vlt|vlt-cron|bundler)
+        pip|uv|uv-cron|poetry|npm|pnpm|bun|deno|pixi|yarn-classic|yarn-berry|vlt|vlt-cron|bundler)
             ;;
         *)
             echo "Error: Unknown remove tool: $tool" >&2
@@ -340,9 +332,10 @@ result_tool_display_name() {
         npm) printf '%s\n' "npm" ;;
         pnpm) printf '%s\n' "pnpm" ;;
         bun) printf '%s\n' "bun" ;;
-        deno) printf '%s\n' "deno" ;;
         yarn-classic) printf '%s\n' "yarn v1" ;;
         yarn-berry) printf '%s\n' "yarn v2+" ;;
+        deno) printf '%s\n' "deno" ;;
+        pixi) printf '%s\n' "pixi" ;;
         vlt) printf '%s\n' "vlt" ;;
         vlt-cron) printf '%s\n' "vlt cron" ;;
         bundler) printf '%s\n' "Bundler" ;;
@@ -351,11 +344,11 @@ result_tool_display_name() {
 }
 
 init_results_table() {
-    RESULT_TOOL_KEYS=(pip uv uv-cron poetry npm pnpm bun deno yarn-classic yarn-berry vlt vlt-cron bundler)
-    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- --)
-    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "")
-    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- --)
-    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "")
+    RESULT_TOOL_KEYS=(pip uv uv-cron poetry npm pnpm bun deno pixi yarn-classic yarn-berry vlt vlt-cron bundler)
+    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- -- --)
+    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "" "")
+    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- -- --)
+    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "" "")
 }
 
 result_row_index() {
@@ -368,11 +361,12 @@ result_row_index() {
         pnpm) printf '%s\n' 5 ;;
         bun) printf '%s\n' 6 ;;
         deno) printf '%s\n' 7 ;;
-        yarn-classic) printf '%s\n' 8 ;;
-        yarn-berry) printf '%s\n' 9 ;;
-        vlt) printf '%s\n' 10 ;;
-        vlt-cron) printf '%s\n' 11 ;;
-        bundler) printf '%s\n' 12 ;;
+        pixi) printf '%s\n' 8 ;;
+        yarn-classic) printf '%s\n' 9 ;;
+        yarn-berry) printf '%s\n' 10 ;;
+        vlt) printf '%s\n' 11 ;;
+        vlt-cron) printf '%s\n' 12 ;;
+        bundler) printf '%s\n' 13 ;;
         *) return 1 ;;
     esac
 }
@@ -592,6 +586,13 @@ detect_supported_tool_installations() {
         printf 'deno|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
     else
         printf 'deno|no|not found|n/a\n'
+    fi
+
+    if tool_path=$(resolve_tool_path_with_which "pixi"); then
+        tool_version=$(detect_command_version "pixi" "$tool_path")
+        printf 'pixi|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
+    else
+        printf 'pixi|no|not found|n/a\n'
     fi
 
     if tool_path=$(resolve_tool_path_with_which "vlt"); then
@@ -1761,23 +1762,6 @@ run_preflight_checks() {
         record_preflight_skip "bun" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
 
-    installed=$(lookup_detected_tool_field "deno" installed)
-    version=$(lookup_detected_tool_field "deno" version)
-    path=$(lookup_detected_tool_field "deno" path)
-    if [[ "$installed" == "yes" ]]; then
-        if [[ -z "$version" || "$version" == "unknown" ]]; then
-            record_preflight_fail "deno" "$installed" "$version" "$path" "minimumDependencyAge requires version detection; installed version could not be determined" "deno"
-            status=1
-        elif version_gte "$version" "2.6.0"; then
-            record_preflight_ok "deno" "$installed" "$version" "$path" "minimumDependencyAge requires >= 2.6.0"
-        else
-            record_preflight_fail "deno" "$installed" "$version" "$path" "minimumDependencyAge requires >= 2.6.0" "deno"
-            status=1
-        fi
-    else
-        record_preflight_skip "deno" "$installed" "$version" "$path" "not installed; config can still be written"
-    fi
-
     installed=$(lookup_detected_tool_field "vlt" installed)
     version=$(lookup_detected_tool_field "vlt" version)
     path=$(lookup_detected_tool_field "vlt" path)
@@ -1828,6 +1812,9 @@ run_preflight_checks() {
         record_preflight_skip "yarn v2+" "$installed" "$version" "$path" "not installed; config may still be written"
     fi
 
+    ensure_tool_version "deno" "2.6.0" "minimumDependencyAge" || status=1
+    ensure_tool_version "pixi" "0.47.0" "exclude-newer" || status=1
+
     return "$status"
 }
 
@@ -1843,9 +1830,10 @@ run_remove_tools() {
             npm) remove_npm ;;
             pnpm) remove_pnpm ;;
             bun) remove_bun ;;
-            deno) remove_deno ;;
             yarn-classic) remove_yarn_classic ;;
             yarn-berry) remove_yarn_berry ;;
+            deno) remove_deno ;;
+            pixi) remove_pixi ;;
             vlt) remove_vlt ;;
             vlt-cron) remove_cron_vlt ;;
             bundler) remove_bundler ;;
@@ -1862,9 +1850,10 @@ print_config_files() {
     echo "  npm            $(tool_config_path npm)"
     echo "  pnpm           $(tool_config_path pnpm)"
     echo "  bun            $(tool_config_path bun)"
-    echo "  deno           $(tool_config_path deno)"
     echo "  yarn v1        $(tool_config_path yarn-classic)"
     echo "  yarn v2+       $(tool_config_path yarn-berry)"
+    echo "  deno           $(tool_config_path deno)"
+    echo "  pixi           $(tool_config_path pixi)"
     echo "  vlt            $(tool_config_path vlt)"
     echo "  Bundler        $(tool_config_path bundler)"
     echo ""
@@ -2258,7 +2247,6 @@ setup_bun() {
 }
 
 setup_deno() {
-    local deno_config="$DENO_CONFIG_PATH"
     local min_age_duration
     local desired_config current_config detail status current
 
@@ -2374,6 +2362,222 @@ setup_yarn_berry() {
     else
         emit_config_status "yarn v2+" "yarn-berry" "FAIL" "$detail"
     fi
+}
+
+DENO_WRAPPER_MARKER="# set-minimum-package-release-age: deno wrapper"
+PIXI_WRAPPER_MARKER="# set-minimum-package-release-age: pixi wrapper"
+WRAPPER_RC_DIFF_PATTERN='set-minimum-package-release-age\|set-package-min-age'
+
+shell_rc_files() {
+    printf '%s\n' "$HOME/.zshrc" "$HOME/.bashrc"
+}
+
+deno_source_line() {
+    printf '%s' '[ -f "$HOME/.config/set-package-min-age/deno.sh" ] && . "$HOME/.config/set-package-min-age/deno.sh"'
+}
+
+pixi_source_line() {
+    printf '%s' '[ -f "$HOME/.config/set-package-min-age/pixi.sh" ] && . "$HOME/.config/set-package-min-age/pixi.sh"'
+}
+
+build_deno_wrapper_content() {
+    local age="$1"
+    local marker="$2"
+    cat <<EOF
+${marker}
+# minimum-release-age: ${age}d
+deno() {
+    case "\${1:-}" in
+        install|add|update|outdated)
+            command deno "\$1" --minimum-dependency-age=P${age}D "\${@:2}"
+            ;;
+        *)
+            command deno "\$@"
+            ;;
+    esac
+}
+EOF
+}
+
+build_pixi_wrapper_content() {
+    local age="$1"
+    local marker="$2"
+    cat <<EOF
+${marker}
+# minimum-release-age: ${age}d
+pixi() {
+    case "\${1:-}" in
+        install|add|update|upgrade)
+            command pixi "\$1" --exclude-newer "${age}d" "\${@:2}"
+            ;;
+        *)
+            command pixi "\$@"
+            ;;
+    esac
+}
+EOF
+}
+
+verify_rc_diff_or_rollback() {
+    local rc_file="$1"
+    local backup="${rc_file}${BACKUP_SUFFIX}"
+
+    if [[ ! -f "$backup" ]]; then
+        return 0
+    fi
+
+    local diff_output content_lines unexpected
+    diff_output=$(diff "$backup" "$rc_file" 2>/dev/null || true)
+
+    if [[ -z "$diff_output" ]]; then
+        rm -f "$backup"
+        return 0
+    fi
+
+    content_lines=$(echo "$diff_output" | grep '^[<>]' | sed 's/^[<>] *//' | grep -v '^$' || true)
+    if [[ -z "$content_lines" ]]; then
+        rm -f "$backup"
+        return 0
+    fi
+
+    unexpected=$(echo "$content_lines" | grep -v "$WRAPPER_RC_DIFF_PATTERN" || true)
+    if [[ -n "$unexpected" ]]; then
+        cp "$backup" "$rc_file"
+        rm -f "$backup"
+        return 1
+    fi
+
+    rm -f "$backup"
+    return 0
+}
+
+manage_rc_source_line() {
+    local rc_file="$1"
+    local marker="$2"
+    local source_line="$3"
+
+    ensure_file_exists "$rc_file"
+
+    if grep -Fxq "$marker" "$rc_file" 2>/dev/null \
+        && grep -Fxq "$source_line" "$rc_file" 2>/dev/null; then
+        return 0
+    fi
+
+    backup_if_exists "$rc_file"
+
+    write_file_from_command "$rc_file" awk \
+        -v marker="$marker" \
+        -v source_line="$source_line" '
+        $0 == marker { next }
+        $0 == source_line { next }
+        { print }
+    ' "$rc_file"
+
+    printf '%s\n%s\n' "$marker" "$source_line" >> "$rc_file"
+
+    verify_rc_diff_or_rollback "$rc_file"
+}
+
+remove_rc_source_line() {
+    local rc_file="$1"
+    local marker="$2"
+    local source_line="$3"
+
+    if [[ ! -f "$rc_file" ]]; then
+        return 0
+    fi
+
+    if ! grep -Fxq "$marker" "$rc_file" 2>/dev/null \
+        && ! grep -Fxq "$source_line" "$rc_file" 2>/dev/null; then
+        return 0
+    fi
+
+    backup_if_exists "$rc_file"
+
+    write_file_from_command "$rc_file" awk \
+        -v marker="$marker" \
+        -v source_line="$source_line" '
+        $0 == marker { next }
+        $0 == source_line { next }
+        { print }
+    ' "$rc_file"
+
+    verify_rc_diff_or_rollback "$rc_file"
+}
+
+setup_wrapper_tool() {
+    local tool_key="$1"
+    local tool_display="$2"
+    local marker="$3"
+    local wrapper_file="$4"
+    local source_line="$5"
+    local detail="$6"
+    local current_age desired_age_marker status="added" rc all_ok=true rc_status=0
+
+    desired_age_marker="# minimum-release-age: ${MIN_AGE_DAYS}d"
+
+    mkdir -p "$(dirname "$wrapper_file")"
+
+    if [[ -f "$wrapper_file" ]] \
+        && grep -Fxq "$marker" "$wrapper_file" 2>/dev/null \
+        && grep -Fxq "$desired_age_marker" "$wrapper_file" 2>/dev/null; then
+        for rc in $(shell_rc_files); do
+            if [[ ! -f "$rc" ]] \
+                || ! grep -Fxq "$marker" "$rc" 2>/dev/null \
+                || ! grep -Fxq "$source_line" "$rc" 2>/dev/null; then
+                all_ok=false
+                break
+            fi
+        done
+        if [[ "$all_ok" == true ]]; then
+            emit_config_status "$tool_display" "$tool_key" "ok" "$detail"
+            SKIPPED_TOOLS+=("$tool_key")
+            return 0
+        fi
+    fi
+
+    if [[ -f "$wrapper_file" ]] && grep -q '^# minimum-release-age:' "$wrapper_file" 2>/dev/null; then
+        current_age=$(grep '^# minimum-release-age:' "$wrapper_file" | head -1 | sed 's/^# minimum-release-age: *//')
+        if [[ -n "$current_age" && "$current_age" != "${MIN_AGE_DAYS}d" ]]; then
+            status="updated"
+            detail="${current_age} --> ${detail}"
+        fi
+    fi
+
+    if [[ "$tool_key" == "deno" ]]; then
+        write_file_from_command "$wrapper_file" build_deno_wrapper_content "$MIN_AGE_DAYS" "$marker"
+    else
+        write_file_from_command "$wrapper_file" build_pixi_wrapper_content "$MIN_AGE_DAYS" "$marker"
+    fi
+
+    for rc in $(shell_rc_files); do
+        if ! manage_rc_source_line "$rc" "$marker" "$source_line"; then
+            rc_status=1
+        fi
+    done
+
+    if [[ "$rc_status" -ne 0 ]]; then
+        emit_config_status "$tool_display" "$tool_key" "FAIL" "$detail"
+        FAILED_TOOLS+=("$tool_key")
+        return 0
+    fi
+
+    emit_config_status "$tool_display" "$tool_key" "$status" "$detail"
+    UPDATED_TOOLS+=("$tool_key")
+}
+
+setup_deno() {
+    setup_wrapper_tool "deno" "deno" "$DENO_WRAPPER_MARKER" \
+        "$HOME/.config/set-package-min-age/deno.sh" \
+        "$(deno_source_line)" \
+        "--minimum-dependency-age=P${MIN_AGE_DAYS}D"
+}
+
+setup_pixi() {
+    setup_wrapper_tool "pixi" "pixi" "$PIXI_WRAPPER_MARKER" \
+        "$HOME/.config/set-package-min-age/pixi.sh" \
+        "$(pixi_source_line)" \
+        "--exclude-newer ${MIN_AGE_DAYS}d"
 }
 
 setup_vlt() {
@@ -2732,6 +2936,68 @@ remove_yarn_berry() {
     cleanup_empty_file "$yarnrc_yml"
 }
 
+remove_wrapper_tool() {
+    local tool_key="$1"
+    local tool_display="$2"
+    local marker="$3"
+    local wrapper_file="$4"
+    local source_line="$5"
+    local current_age="" rc rc_status=0 had_state=false
+
+    if [[ -f "$wrapper_file" ]]; then
+        had_state=true
+        if grep -q '^# minimum-release-age:' "$wrapper_file" 2>/dev/null; then
+            current_age=$(grep '^# minimum-release-age:' "$wrapper_file" | head -1 | sed 's/^# minimum-release-age: *//')
+        fi
+    fi
+
+    for rc in $(shell_rc_files); do
+        if [[ -f "$rc" ]] && grep -Fxq "$marker" "$rc" 2>/dev/null; then
+            had_state=true
+            break
+        fi
+    done
+
+    if [[ "$had_state" == false ]]; then
+        emit_config_status "$tool_display" "$tool_key" "ok" "wrapper not present"
+        SKIPPED_TOOLS+=("$tool_key")
+        return 0
+    fi
+
+    if [[ -f "$wrapper_file" ]]; then
+        rm -f "$wrapper_file"
+    fi
+
+    rmdir "$HOME/.config/set-package-min-age" 2>/dev/null || true
+
+    for rc in $(shell_rc_files); do
+        if ! remove_rc_source_line "$rc" "$marker" "$source_line"; then
+            rc_status=1
+        fi
+    done
+
+    if [[ "$rc_status" -ne 0 ]]; then
+        emit_config_status "$tool_display" "$tool_key" "FAIL" "wrapper${current_age:+: $current_age}"
+        FAILED_TOOLS+=("$tool_key")
+        return 0
+    fi
+
+    emit_config_status "$tool_display" "$tool_key" "removed" "wrapper${current_age:+: $current_age}"
+    UPDATED_TOOLS+=("$tool_key")
+}
+
+remove_deno() {
+    remove_wrapper_tool "deno" "deno" "$DENO_WRAPPER_MARKER" \
+        "$HOME/.config/set-package-min-age/deno.sh" \
+        "$(deno_source_line)"
+}
+
+remove_pixi() {
+    remove_wrapper_tool "pixi" "pixi" "$PIXI_WRAPPER_MARKER" \
+        "$HOME/.config/set-package-min-age/pixi.sh" \
+        "$(pixi_source_line)"
+}
+
 remove_vlt() {
     local current detail
 
@@ -2796,7 +3062,6 @@ validate_configs() {
     local expected_poetry_age="min-release-age = ${MIN_AGE_DAYS}"
     local expected_pnpm_age="minimum-release-age=$(( MIN_AGE_DAYS * 1440 ))"
     local expected_bun_age="minimumReleaseAge = $(( MIN_AGE_DAYS * 86400 ))"
-    local expected_deno_config
     local expected_yarn_v1_age="cache-min $(( MIN_AGE_DAYS * 86400 ))"
     local expected_yarn_v2_age="npmMinimalAgeGate: $(yaml_quote "${MIN_AGE_DAYS}d")"
     local expected_bundler_age="BUNDLE_COOLDOWN: \"${MIN_AGE_DAYS}\""
@@ -2808,10 +3073,8 @@ validate_configs() {
     local expected_yarn_exceptions=""
     local expected_pnpm_exceptions=""
     local current_exceptions current_source_exceptions item
-    local current_deno_config
 
     pnpm_config=$(pnpm_active_config_path)
-    expected_deno_config=$(build_deno_minimum_dependency_age_config)
 
     if pnpm_active_config_is_yaml; then
         expected_pnpm_age="minimumReleaseAge: $(( MIN_AGE_DAYS * 1440 ))"
@@ -2932,17 +3195,6 @@ validate_configs() {
         record_validation_skip "bun" "config not present" "bun"
     fi
 
-    if [[ -f "$deno_config" ]]; then
-        current_deno_config=$(current_deno_minimum_dependency_age_config "$deno_config")
-        if [[ "$current_deno_config" == "$expected_deno_config" ]]; then
-            record_validation_ok "deno" "minimumDependencyAge matches" "deno"
-        else
-            record_validation_fail "deno" "minimumDependencyAge settings do not match" "deno"
-        fi
-    else
-        record_validation_skip "deno" "config not present" "deno"
-    fi
-
     if [[ -f "$yarnrc" ]]; then
         if grep -Fqx "$expected_yarn_v1_age" "$yarnrc" 2>/dev/null; then
             record_validation_ok "yarn v1" "$expected_yarn_v1_age" "yarn-classic"
@@ -2965,6 +3217,16 @@ validate_configs() {
         record_validation_skip "yarn v2+" "config not present" "yarn-berry"
     fi
 
+    validate_wrapper_tool "deno" "deno" "$DENO_WRAPPER_MARKER" \
+        "$HOME/.config/set-package-min-age/deno.sh" \
+        "$(deno_source_line)" \
+        "--minimum-dependency-age=P${MIN_AGE_DAYS}D"
+
+    validate_wrapper_tool "pixi" "pixi" "$PIXI_WRAPPER_MARKER" \
+        "$HOME/.config/set-package-min-age/pixi.sh" \
+        "$(pixi_source_line)" \
+        "--exclude-newer \"${MIN_AGE_DAYS}d\""
+
     if [[ -f "$VLT_CONFIG_PATH" ]]; then
         if grep -Fq "$expected_vlt_before" "$VLT_CONFIG_PATH" 2>/dev/null; then
             record_validation_ok "vlt" "before matches" "vlt"
@@ -2983,6 +3245,44 @@ validate_configs() {
         fi
     else
         record_validation_skip "Bundler" "config not present" "bundler"
+    fi
+}
+
+validate_wrapper_tool() {
+    local tool_display="$1"
+    local tool_key="$2"
+    local marker="$3"
+    local wrapper_file="$4"
+    local source_line="$5"
+    local expected_flag="$6"
+    local desired_age_marker="# minimum-release-age: ${MIN_AGE_DAYS}d"
+    local rc rc_ok=false
+
+    if [[ ! -f "$wrapper_file" ]]; then
+        record_validation_skip "$tool_display" "wrapper not present" "$tool_key"
+        return 0
+    fi
+
+    if ! grep -Fxq "$marker" "$wrapper_file" 2>/dev/null \
+        || ! grep -Fxq "$desired_age_marker" "$wrapper_file" 2>/dev/null \
+        || ! grep -Fq -- "$expected_flag" "$wrapper_file" 2>/dev/null; then
+        record_validation_fail "$tool_display" "wrapper contents do not match" "$tool_key"
+        return 0
+    fi
+
+    for rc in $(shell_rc_files); do
+        if [[ -f "$rc" ]] \
+            && grep -Fxq "$marker" "$rc" 2>/dev/null \
+            && grep -Fxq "$source_line" "$rc" 2>/dev/null; then
+            rc_ok=true
+            break
+        fi
+    done
+
+    if [[ "$rc_ok" == true ]]; then
+        record_validation_ok "$tool_display" "wrapper sourced from rc" "$tool_key"
+    else
+        record_validation_fail "$tool_display" "no rc file sources the wrapper" "$tool_key"
     fi
 }
 
@@ -3017,7 +3317,7 @@ main() {
         printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
         print_separator
 
-        run_remove_tools pip uv uv-cron poetry npm pnpm bun deno yarn-classic yarn-berry vlt vlt-cron bundler
+        run_remove_tools pip uv uv-cron poetry npm pnpm bun deno pixi yarn-classic yarn-berry vlt vlt-cron bundler
 
         echo ""
         echo "  Summary"
@@ -3094,6 +3394,7 @@ main() {
     run_progress_step pnpm config setup_pnpm
     run_progress_step bun config setup_bun
     run_progress_step deno config setup_deno
+    run_progress_step pixi config setup_pixi
     run_progress_step yarn-classic config setup_yarn_classic
     run_progress_step yarn-berry config setup_yarn_berry
     run_progress_step vlt config setup_vlt

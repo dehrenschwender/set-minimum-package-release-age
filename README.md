@@ -15,12 +15,13 @@ The repo now uses a shared core library plus thin platform wrappers:
 | Python | `pip` | upload-time age gate via relative `uploaded-prior-to` | `~/.config/pip/pip.conf` |
 | Python | `uv` | native relative age gate + per-package exceptions | `~/.config/uv/uv.toml` |
 | Python | `Poetry` | native age gate + package/source exceptions | `~/.config/pypoetry/config.toml` (Linux) / `~/Library/Application Support/pypoetry/config.toml` (macOS) |
+| Python | `pixi` | shell wrapper injecting `--exclude-newer` (no user-level config exists) | `~/.config/set-package-min-age/pixi.sh` (sourced from `~/.zshrc` and `~/.bashrc`) |
 | JavaScript | `npm` | native age gate + package/glob excludes | `~/.npmrc` |
 | JavaScript | `pnpm` | native age gate + selectors to exclude | pnpm 11+: `~/.config/pnpm/config.yaml` (Linux) / `~/Library/Preferences/pnpm/config.yaml` (macOS); pnpm 10: platform legacy `rc` |
 | JavaScript | `bun` | native age gate + package excludes | `~/.bunfig.toml` |
-| JavaScript | `deno` | native age gate + package excludes | `~/deno.json` |
 | JavaScript | `yarn classic (v1)` | cache TTL workaround, not a true publish-age gate | `~/.yarnrc` |
 | JavaScript | `yarn berry (v2+)` | native age gate + preapproved package patterns | `~/.yarnrc.yml` |
+| JavaScript / Multi | `deno` | shell wrapper injecting `--minimum-dependency-age` (no user-level config exists) | `~/.config/set-package-min-age/deno.sh` (sourced from `~/.zshrc` and `~/.bashrc`) |
 | JavaScript | `vlt` | native before-date gate | `~/.config/vlt/vlt.json` (Linux) / `~/Library/Preferences/vlt/vlt.json` (macOS) |
 | Ruby | `Bundler` | native cooldown | `~/.bundle/config` |
 
@@ -34,9 +35,10 @@ The repo now uses a shared core library plus thin platform wrappers:
 | `npm` | yes | yes | no | yes | yes |
 | `pnpm` | yes | yes | no | yes | yes |
 | `bun` | yes | yes | no | yes | yes |
-| `deno` | yes | yes | no | yes | yes |
 | `yarn classic (v1)` | no | no | `cache-min` TTL workaround | yes | no |
 | `yarn berry (v2+)` | yes | yes | no | yes | yes |
+| `deno` | yes (CLI flag) | no (project config only) | shell wrapper around `--minimum-dependency-age` | yes | yes (>= 2.6.0) |
+| `pixi` | yes (CLI/project config) | no | shell wrapper around `--exclude-newer` | yes | yes (>= 0.47.0) |
 | `vlt` | yes | no | no | yes | no documented minimum |
 | `Bundler` | yes | no | no | yes | warning |
 
@@ -52,10 +54,11 @@ The repo now uses a shared core library plus thin platform wrappers:
 - pnpm `11.0.0+` global settings are written to `config.yaml` using YAML keys; older pnpm releases keep using the legacy platform `rc` path.
 - Yarn Berry `npmMinimalAgeGate` and `npmPreapprovedPackages` require Yarn `4.12.0+` for the current documented age gate behavior.
 - `bun` `minimumReleaseAge` / `minimumReleaseAgeExcludes` require Bun `1.3.0+`.
-- `deno` `minimumDependencyAge` requires Deno `2.6.0+`.
 - `vlt` uses `before`; the current implementation supports the config, but this repo does not pin an official minimum introducing version.
 - `Bundler` `cooldown` requires Bundler `4.0.13+`; older or unknown installed Bundler versions warn but do not stop the script, and the config is still written for use after Bundler is upgraded.
 - Yarn Classic only supports `cache-min`, which is a cache freshness workaround rather than native publish-date filtering.
+- Deno `minimumDependencyAge` and `--minimum-dependency-age` require Deno `2.6.0+`. Deno `2.8+` can also read `min-release-age` from `.npmrc`, and Deno `2.9+` defaults to a 24-hour gate. This repo keeps a shell wrapper so its requested age works independently of npm configuration and project files.
+- Pixi `exclude-newer` requires Pixi `0.47.0+`. Pixi exposes it through project configuration and CLI flags but not user-level configuration, so this repo installs a shell wrapper for `pixi install`, `pixi add`, `pixi update`, and `pixi upgrade`.
 
 ## Usage
 
@@ -69,7 +72,6 @@ bash set_package_min_age_macos.sh --exception "uv:setuptools=false"
 bash set_package_min_age_macos.sh --exception "poetry:internal-lib" --exception "poetry-source:private-repo"
 bash set_package_min_age_macos.sh --exception "npm:@myorg/*"
 bash set_package_min_age_macos.sh --exception "pnpm:webpack" --exception "bun:typescript"
-bash set_package_min_age_macos.sh --exception "deno:npm:chalk" --exception "deno:jsr:@std/assert"
 bash set_package_min_age_macos.sh --exception "yarn-berry:@myorg/*"
 bash set_package_min_age_macos.sh --remove-tool uv --remove-tool uv-cron
 bash set_package_min_age_macos.sh --remove-tool poetry --remove-tool bundler
@@ -87,7 +89,6 @@ bash set_package_min_age_linux.sh --exception "uv:setuptools=false"
 bash set_package_min_age_linux.sh --exception "poetry:internal-lib" --exception "poetry-source:private-repo"
 bash set_package_min_age_linux.sh --exception "npm:@myorg/*"
 bash set_package_min_age_linux.sh --exception "pnpm:webpack" --exception "bun:typescript"
-bash set_package_min_age_linux.sh --exception "deno:npm:chalk" --exception "deno:jsr:@std/assert"
 bash set_package_min_age_linux.sh --exception "yarn-berry:@myorg/*"
 bash set_package_min_age_linux.sh --remove-tool yarn-berry
 bash set_package_min_age_linux.sh --remove-tool bundler
@@ -109,14 +110,14 @@ bash set_package_min_age_linux.sh --help
   - package name, glob, or supported version selector
 - `--exception bun:PACKAGE`
   - package name to bypass the age gate
-- `--exception deno:SPECIFIER`
-  - package specifier to bypass the age gate; must start with `npm:` or `jsr:`
 - `--exception yarn-berry:PATTERN`
   - pattern added to Yarn Berry `npmPreapprovedPackages`
 
 Unsupported exception targets:
 
 - `pip`
+- `deno`
+- `pixi`
 - `vlt`
 - `yarn-classic`
 - `bundler`
@@ -130,7 +131,6 @@ bash set_package_min_age_linux.sh 7 \
   --exception "npm:@myorg/*" \
   --exception "pnpm:@myorg/*" \
   --exception "bun:typescript" \
-  --exception "deno:npm:chalk" \
   --exception "yarn-berry:@myorg/*"
 ```
 
@@ -146,6 +146,7 @@ Use repeatable `--remove-tool` flags to remove settings for only selected manage
 - `pnpm`
 - `bun`
 - `deno`
+- `pixi`
 - `yarn-classic`
 - `yarn-berry`
 - `vlt`
@@ -183,11 +184,18 @@ For each supported tool, the script:
 
 `Poetry` is written under `[solver]` in Poetry's global `config.toml`.
 
-`deno` is written with a relative `minimumDependencyAge` ISO duration, such as `P7D`. Deno uses project config files, so the scripts manage `~/deno.json` as a home-level default for projects below `HOME`; set `DENO_CONFIG_PATH` if you want to manage a different project config.
-
 `vlt` is written with an absolute `before` timestamp under `config`, so the scripts also manage a daily cron job that reruns the wrapper in a refresh mode for the VLT config only.
 
 `Bundler` is written as a global `BUNDLE_COOLDOWN` value in `~/.bundle/config`.
+
+`deno` and `pixi` are managed as shell wrappers under `~/.config/set-package-min-age/`, sourced by both `~/.zshrc` and `~/.bashrc`. The wrappers shadow the `deno` / `pixi` commands and inject the corresponding `--minimum-dependency-age` / `--exclude-newer` flag for the relevant install/update subcommands. Other subcommands fall through to the real binary unchanged.
+
+### Shell Wrapper Caveats (deno, pixi)
+
+- The wrappers only apply to interactive shells that source `~/.zshrc` or `~/.bashrc`. Non-interactive scripts and other shells (fish, nushell) are not covered.
+- The wrappers can be bypassed deliberately with `command deno ...` / `command pixi ...`.
+- Per-package exceptions are not exposed by the wrapper flags; configure supported exceptions in the project's `deno.json` or Pixi manifest if needed.
+- A new shell session is required after running the script for the wrappers to take effect (or `source ~/.zshrc` / `source ~/.bashrc` in an existing one).
 
 ## Idempotence
 
