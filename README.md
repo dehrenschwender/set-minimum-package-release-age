@@ -56,6 +56,7 @@ The repo now uses a shared core library plus thin platform wrappers:
 - `bun` `minimumReleaseAge` / `minimumReleaseAgeExcludes` require Bun `1.3.0+`.
 - `vlt` uses `before`; the current implementation supports the config, but this repo does not pin an official minimum introducing version.
 - `Bundler` `cooldown` shipped in Bundler `4.0.13`; this repo requires `4.0.15+` because `4.0.14` and `4.0.15` fixed cooldown behavior around sources and locked versions.
+- macOS includes an old system Bundler at `/usr/bin/bundle` on some releases. Unsupported Bundler versions are skipped without blocking configuration of the other package managers.
 - Yarn Classic only supports `cache-min`, which is a cache freshness workaround rather than native publish-date filtering.
 - Deno `minimumDependencyAge` and `--minimum-dependency-age` require Deno `2.6.0+`. Deno `2.8+` can also read `min-release-age` from `.npmrc`, and Deno `2.9+` defaults to a 24-hour gate. This repo keeps a shell wrapper so its requested age works independently of npm configuration and project files.
 - Pixi `exclude-newer` requires Pixi `0.47.0+`. Pixi exposes it through project configuration and CLI flags but not user-level configuration, so this repo installs a shell wrapper for `pixi install`, `pixi add`, `pixi update`, and `pixi upgrade`.

@@ -16,6 +16,7 @@ reset_status_arrays() {
 
 prepare_scoped_remove_fixtures() {
     install_fake_crontab
+    install_fake_detection_tools "4.12.0"
     load_common_library
     parse_args 4 \
         --exception uv:setuptools=false \
@@ -467,6 +468,7 @@ test_setup_remove_vlt() {
 
 test_setup_remove_bundler() {
     setup_test_env
+    install_fake_detection_tools "4.12.0"
     load_common_library
     parse_args 8
 
@@ -730,6 +732,7 @@ test_setup_remove_yarn_berry() {
 
 test_validate_configs() {
     setup_test_env
+    install_fake_detection_tools "4.12.0"
     load_common_library
     parse_args 7 \
         --exception uv:setuptools=false \
@@ -968,7 +971,7 @@ test_preflight_deno_config_version_failure_unused() {
     cleanup_test_env
 }
 
-test_preflight_bundler_version_failure() {
+test_preflight_bundler_legacy_version_skip() {
     setup_test_env
     install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "0.0.0" 1 "2.8.0" 1 "2.4.0" 1 "4.0.14"
     load_common_library
@@ -979,8 +982,10 @@ test_preflight_bundler_version_failure() {
     status=$?
     set -e
 
-    assert_eq 1 "$status"
-    assert_contains "$output" "cooldown requires >= 4.0.15"
+    assert_eq 0 "$status"
+    assert_contains "$output" "cooldown skipped; requires >= 4.0.15"
+    assert_contains "$output" "pip              added"
+    assert_contains "$output" "Bundler          --"
     assert_not_exists "$BUNDLER_CONFIG_PATH"
     cleanup_test_env
 }
@@ -1259,7 +1264,7 @@ run_test "preflight_pnpm_base_version_failure" test_preflight_pnpm_base_version_
 run_test "preflight_pnpm_pattern_exception_version_failure" test_preflight_pnpm_pattern_exception_version_failure || true
 run_test "preflight_pnpm_version_selector_failure" test_preflight_pnpm_version_selector_failure || true
 run_test "preflight_bun_version_failure" test_preflight_bun_version_failure || true
-run_test "preflight_bundler_version_failure" test_preflight_bundler_version_failure || true
+run_test "preflight_bundler_legacy_version_skip" test_preflight_bundler_legacy_version_skip || true
 run_test "preflight_yarn_berry_version_failure" test_preflight_yarn_berry_version_failure || true
 run_test "main_output_includes_readiness_and_results" test_main_output_includes_readiness_and_results || true
 run_test "main_remove_output_includes_tool_overview" test_main_remove_output_includes_tool_overview || true
