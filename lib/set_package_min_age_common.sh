@@ -4,7 +4,12 @@
 set -euo pipefail
 
 PLATFORM_NAME="${PLATFORM_NAME:-Unknown}"
+PNPM_CONFIG_PATH="${PNPM_CONFIG_PATH:-$HOME/.config/pnpm/config.yaml}"
 PNPM_RC_PATH="${PNPM_RC_PATH:-$HOME/.config/pnpm/rc}"
+VLT_CONFIG_PATH="${VLT_CONFIG_PATH:-$HOME/.config/vlt/vlt.json}"
+DENO_CONFIG_PATH="${DENO_CONFIG_PATH:-$HOME/deno.json}"
+POETRY_CONFIG_PATH="${POETRY_CONFIG_PATH:-$HOME/.config/pypoetry/config.toml}"
+BUNDLER_CONFIG_PATH="${BUNDLER_CONFIG_PATH:-$HOME/.bundle/config}"
 
 REMOVE_MODE=false
 REMOVE_SCOPED_MODE=false
@@ -13,9 +18,13 @@ MIN_AGE_DAYS=7
 BACKUP_SUFFIX=""
 REMOVE_TOOLS=()
 UV_EXCEPTIONS=()
+POETRY_EXCEPTIONS=()
+POETRY_SOURCE_EXCEPTIONS=()
+NPM_EXCEPTIONS=()
 PNPM_EXCEPTIONS=()
 BUN_EXCEPTIONS=()
 YARN_EXCEPTIONS=()
+DENO_EXCEPTIONS=()
 TOOL_DETECTION_CACHE=""
 NORMAL_MODE_REPORTING=false
 RESULT_TOOL_KEYS=()
@@ -34,7 +43,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS] [DAYS]
 
-Set a minimum package release age across pip, uv, npm, pnpm, bun, and yarn.
+Set a minimum package release age across pip, uv, Poetry, npm, pnpm, bun, deno, yarn, vlt, and Bundler.
 
 Arguments:
   DAYS                    Minimum age in days (default: 7). Accepts "14" or "14d".
@@ -43,6 +52,9 @@ Options:
   --exception SPEC        Add a native exception in the form:
                           uv:<package>=false
                           uv:<package>=<duration-or-rfc3339>
+                          poetry:<package>
+                          poetry-source:<source-name-or-url>
+                          npm:<package-or-glob>
                           pnpm:<selector>
                           bun:<package>
                           yarn-berry:<pattern>
@@ -56,6 +68,7 @@ Examples:
   $(basename "$0") 14                      # Set minimum age to 14 days
   $(basename "$0") 1d                      # Set minimum age to 1 day
   $(basename "$0") --exception uv:foo=false 14
+  $(basename "$0") --exception poetry:internal-lib --exception npm:'@myorg/*'
   $(basename "$0") --exception pnpm:webpack --exception bun:typescript
   $(basename "$0") --exception yarn-berry:'@myorg/*'
   $(basename "$0") --remove-tool uv --remove-tool uv-cron
@@ -83,20 +96,24 @@ tool_config_path() {
         pip) printf '%s\n' "$HOME/.config/pip/pip.conf" ;;
         uv) printf '%s\n' "$HOME/.config/uv/uv.toml" ;;
         uv-cron) printf '%s\n' "crontab entry ($CRON_MARKER)" ;;
+        poetry) printf '%s\n' "$POETRY_CONFIG_PATH" ;;
         npm) printf '%s\n' "$HOME/.npmrc" ;;
-        pnpm) printf '%s\n' "$PNPM_RC_PATH" ;;
+        pnpm) pnpm_active_config_path ;;
         bun) printf '%s\n' "$HOME/.bunfig.toml" ;;
         yarn-classic) printf '%s\n' "$HOME/.yarnrc" ;;
         yarn-berry) printf '%s\n' "$HOME/.yarnrc.yml" ;;
         deno) printf '%s\n' "$HOME/.config/set-package-min-age/deno.sh" ;;
         pixi) printf '%s\n' "$HOME/.config/set-package-min-age/pixi.sh" ;;
+        vlt) printf '%s\n' "$VLT_CONFIG_PATH" ;;
+        vlt-cron) printf '%s\n' "crontab entry ($VLT_CRON_MARKER)" ;;
+        bundler) printf '%s\n' "$BUNDLER_CONFIG_PATH" ;;
         *) return 1 ;;
     esac
 }
 
 tool_supports_native_exceptions() {
     case "$1" in
-        uv|pnpm|bun|yarn-berry) return 0 ;;
+        uv|poetry|npm|pnpm|bun|yarn-berry) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -121,6 +138,27 @@ parse_exception_spec() {
             fi
             UV_EXCEPTIONS+=("$value")
             ;;
+        poetry)
+            if [[ -z "$value" ]]; then
+                echo "Error: poetry exceptions require a package name." >&2
+                exit 1
+            fi
+            POETRY_EXCEPTIONS+=("$value")
+            ;;
+        poetry-source)
+            if [[ -z "$value" ]]; then
+                echo "Error: poetry-source exceptions require a source name or URL." >&2
+                exit 1
+            fi
+            POETRY_SOURCE_EXCEPTIONS+=("$value")
+            ;;
+        npm)
+            if [[ -z "$value" ]]; then
+                echo "Error: npm exceptions require a package name or glob." >&2
+                exit 1
+            fi
+            NPM_EXCEPTIONS+=("$value")
+            ;;
         pnpm)
             if [[ -z "$value" ]]; then
                 echo "Error: pnpm exceptions require a selector." >&2
@@ -142,7 +180,7 @@ parse_exception_spec() {
             fi
             YARN_EXCEPTIONS+=("$value")
             ;;
-        pip|npm|yarn-classic|deno|pixi)
+        pip|yarn-classic|deno|pixi|vlt|bundler)
             echo "Error: $target does not support native exceptions." >&2
             exit 1
             ;;
@@ -157,7 +195,7 @@ parse_remove_tool() {
     local tool="$1"
 
     case "$tool" in
-        pip|uv|uv-cron|npm|pnpm|bun|yarn-classic|yarn-berry|deno|pixi)
+        pip|uv|uv-cron|poetry|npm|pnpm|bun|deno|pixi|yarn-classic|yarn-berry|vlt|vlt-cron|bundler)
             ;;
         *)
             echo "Error: Unknown remove tool: $tool" >&2
@@ -177,9 +215,13 @@ parse_args() {
     MIN_AGE_DAYS=7
     REMOVE_TOOLS=()
     UV_EXCEPTIONS=()
+    POETRY_EXCEPTIONS=()
+    POETRY_SOURCE_EXCEPTIONS=()
+    NPM_EXCEPTIONS=()
     PNPM_EXCEPTIONS=()
     BUN_EXCEPTIONS=()
     YARN_EXCEPTIONS=()
+    DENO_EXCEPTIONS=()
     TOOL_DETECTION_CACHE=""
 
     while [[ $# -gt 0 ]]; do
@@ -235,7 +277,7 @@ parse_args() {
     fi
 
     if [[ "$REMOVE_MODE" == true || "$REMOVE_SCOPED_MODE" == true ]]; then
-        if [[ ${#UV_EXCEPTIONS[@]} -gt 0 || ${#PNPM_EXCEPTIONS[@]} -gt 0 || ${#BUN_EXCEPTIONS[@]} -gt 0 || ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
+        if [[ ${#UV_EXCEPTIONS[@]} -gt 0 || ${#POETRY_EXCEPTIONS[@]} -gt 0 || ${#POETRY_SOURCE_EXCEPTIONS[@]} -gt 0 || ${#NPM_EXCEPTIONS[@]} -gt 0 || ${#PNPM_EXCEPTIONS[@]} -gt 0 || ${#BUN_EXCEPTIONS[@]} -gt 0 || ${#DENO_EXCEPTIONS[@]} -gt 0 || ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
             echo "Error: removal modes cannot be combined with --exception." >&2
             exit 1
         fi
@@ -282,6 +324,7 @@ result_tool_display_name() {
         pip) printf '%s\n' "pip" ;;
         uv) printf '%s\n' "uv" ;;
         uv-cron) printf '%s\n' "uv cron" ;;
+        poetry) printf '%s\n' "Poetry" ;;
         npm) printf '%s\n' "npm" ;;
         pnpm) printf '%s\n' "pnpm" ;;
         bun) printf '%s\n' "bun" ;;
@@ -289,16 +332,19 @@ result_tool_display_name() {
         yarn-berry) printf '%s\n' "yarn v2+" ;;
         deno) printf '%s\n' "deno" ;;
         pixi) printf '%s\n' "pixi" ;;
+        vlt) printf '%s\n' "vlt" ;;
+        vlt-cron) printf '%s\n' "vlt cron" ;;
+        bundler) printf '%s\n' "Bundler" ;;
         *) printf '%s\n' "$1" ;;
     esac
 }
 
 init_results_table() {
-    RESULT_TOOL_KEYS=(pip uv uv-cron npm pnpm bun yarn-classic yarn-berry deno pixi)
-    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- -- -- --)
-    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "" "" "")
-    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- -- -- --)
-    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "" "" "")
+    RESULT_TOOL_KEYS=(pip uv uv-cron poetry npm pnpm bun deno pixi yarn-classic yarn-berry vlt vlt-cron bundler)
+    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- -- --)
+    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "" "")
+    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- -- --)
+    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "" "")
 }
 
 result_row_index() {
@@ -306,13 +352,17 @@ result_row_index() {
         pip) printf '%s\n' 0 ;;
         uv) printf '%s\n' 1 ;;
         uv-cron) printf '%s\n' 2 ;;
-        npm) printf '%s\n' 3 ;;
-        pnpm) printf '%s\n' 4 ;;
-        bun) printf '%s\n' 5 ;;
-        yarn-classic) printf '%s\n' 6 ;;
-        yarn-berry) printf '%s\n' 7 ;;
-        deno) printf '%s\n' 8 ;;
-        pixi) printf '%s\n' 9 ;;
+        poetry) printf '%s\n' 3 ;;
+        npm) printf '%s\n' 4 ;;
+        pnpm) printf '%s\n' 5 ;;
+        bun) printf '%s\n' 6 ;;
+        deno) printf '%s\n' 7 ;;
+        pixi) printf '%s\n' 8 ;;
+        yarn-classic) printf '%s\n' 9 ;;
+        yarn-berry) printf '%s\n' 10 ;;
+        vlt) printf '%s\n' 11 ;;
+        vlt-cron) printf '%s\n' 12 ;;
+        bundler) printf '%s\n' 13 ;;
         *) return 1 ;;
     esac
 }
@@ -397,13 +447,13 @@ print_results_table() {
     echo ""
 }
 
-pip_cutoff_timestamp() {
-    date_days_ago_rfc3339 "$MIN_AGE_DAYS"
+pip_uploaded_prior_to_value() {
+    printf 'P%sD\n' "$MIN_AGE_DAYS"
 }
 
 pip_detail_text() {
-    local timestamp="$1"
-    printf 'uploaded-prior-to = %s (%sd window)' "$timestamp" "$MIN_AGE_DAYS"
+    local value="$1"
+    printf 'uploaded-prior-to = %s (%sd window)' "$value" "$MIN_AGE_DAYS"
 }
 
 exception_count_suffix() {
@@ -485,6 +535,13 @@ detect_supported_tool_installations() {
         printf 'uv|no|not found|n/a\n'
     fi
 
+    if tool_path=$(resolve_tool_path_with_which "poetry"); then
+        tool_version=$(detect_command_version "poetry" "$tool_path")
+        printf 'Poetry|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
+    else
+        printf 'Poetry|no|not found|n/a\n'
+    fi
+
     if tool_path=$(resolve_tool_path_with_which "npm"); then
         tool_version=$(detect_command_version "npm" "$tool_path")
         printf 'npm|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
@@ -518,6 +575,20 @@ detect_supported_tool_installations() {
         printf 'pixi|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
     else
         printf 'pixi|no|not found|n/a\n'
+    fi
+
+    if tool_path=$(resolve_tool_path_with_which "vlt"); then
+        tool_version=$(detect_command_version "vlt" "$tool_path")
+        printf 'vlt|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
+    else
+        printf 'vlt|no|not found|n/a\n'
+    fi
+
+    if tool_path=$(resolve_tool_path_with_which "bundle"); then
+        tool_version=$(detect_command_version "bundle" "$tool_path")
+        printf 'Bundler|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
+    else
+        printf 'Bundler|no|not found|n/a\n'
     fi
 
     if yarn_path=$(resolve_tool_path_with_which "yarn"); then
@@ -621,6 +692,38 @@ pnpm_exception_is_version_selector() {
     [[ "$selector" =~ ^[^@[:space:]]+@.+$ ]]
 }
 
+pnpm_active_config_is_yaml() {
+    local installed version
+
+    installed=$(lookup_detected_tool_field "pnpm" installed 2>/dev/null || printf 'no')
+    version=$(lookup_detected_tool_field "pnpm" version 2>/dev/null || printf 'unknown')
+
+    if [[ "$installed" == "yes" && -n "$version" && "$version" != "unknown" ]] \
+        && ! version_gte "$version" "11.0.0"; then
+        return 1
+    fi
+
+    return 0
+}
+
+pnpm_active_config_path() {
+    if pnpm_active_config_is_yaml; then
+        printf '%s\n' "$PNPM_CONFIG_PATH"
+        return
+    fi
+
+    printf '%s\n' "$PNPM_RC_PATH"
+}
+
+pnpm_active_config_label() {
+    if pnpm_active_config_is_yaml; then
+        printf '%s\n' "config.yaml"
+        return
+    fi
+
+    printf '%s\n' "legacy rc"
+}
+
 record_preflight_ok() {
     local tool="$1"
     local installed="$2"
@@ -702,14 +805,12 @@ backup_if_exists() {
     fi
 }
 
-verify_and_finalize() {
+verify_file_changes() {
     local file="$1"
-    local tool_name="$2"
-    local expected_pattern="$3"
+    local expected_pattern="$2"
     local backup="${file}${BACKUP_SUFFIX}"
 
     if [[ ! -f "$backup" ]]; then
-        UPDATED_TOOLS+=("$tool_name")
         return 0
     fi
 
@@ -718,7 +819,6 @@ verify_and_finalize() {
 
     if [[ -z "$diff_output" ]]; then
         rm -f "$backup"
-        UPDATED_TOOLS+=("$tool_name")
         return 0
     fi
 
@@ -727,7 +827,6 @@ verify_and_finalize() {
 
     if [[ -z "$content_lines" ]]; then
         rm -f "$backup"
-        UPDATED_TOOLS+=("$tool_name")
         return 0
     fi
 
@@ -739,13 +838,102 @@ verify_and_finalize() {
         echo "$diff_output" | sed 's/^/                              /'
         cp "$backup" "$file"
         rm -f "$backup"
-        FAILED_TOOLS+=("$tool_name")
         return 1
     fi
 
     rm -f "$backup"
-    UPDATED_TOOLS+=("$tool_name")
     return 0
+}
+
+verify_and_finalize() {
+    local file="$1"
+    local tool_name="$2"
+    local expected_pattern="$3"
+
+    if verify_file_changes "$file" "$expected_pattern"; then
+        UPDATED_TOOLS+=("$tool_name")
+        return 0
+    fi
+
+    FAILED_TOOLS+=("$tool_name")
+    return 1
+}
+
+verify_deno_and_finalize() {
+    local file="$1"
+    local backup="${file}${BACKUP_SUFFIX}"
+
+    if [[ ! -f "$backup" ]]; then
+        UPDATED_TOOLS+=("deno")
+        return 0
+    fi
+
+    local diff_output
+    diff_output=$(diff "$backup" "$file" 2>/dev/null || true)
+
+    if [[ -z "$diff_output" ]]; then
+        rm -f "$backup"
+        UPDATED_TOOLS+=("deno")
+        return 0
+    fi
+
+    if echo "$diff_output" | awk '
+        /^[<>]/ {
+            direction = substr($0, 1, 1)
+            line = $0
+            sub(/^[<>] */, "", line)
+            if (line ~ /^$/) {
+                next
+            }
+            if (line ~ /minimumDependencyAge|"age"|"exclude"|^[[:space:]]*[{}][,]*[[:space:]]*$/) {
+                next
+            }
+
+            normalized = line
+            has_comma = normalized ~ /,[[:space:]]*$/
+            sub(/,[[:space:]]*$/, "", normalized)
+            if (normalized !~ /^[[:space:]]*"[^"]+"[[:space:]]*:/) {
+                bad = 1
+                next
+            }
+
+            keys[normalized] = 1
+            counts[normalized, direction, has_comma ? "comma" : "plain"]++
+        }
+        END {
+            for (key in keys) {
+                removed_comma = counts[key, "<", "comma"] + 0
+                removed_plain = counts[key, "<", "plain"] + 0
+                added_comma = counts[key, ">", "comma"] + 0
+                added_plain = counts[key, ">", "plain"] + 0
+                if (removed_comma != added_plain || removed_plain != added_comma) {
+                    bad = 1
+                }
+            }
+            exit bad ? 1 : 0
+        }
+    '; then
+        rm -f "$backup"
+        UPDATED_TOOLS+=("deno")
+        return 0
+    fi
+
+    print_status "" "ROLLBACK" "unexpected changes detected, restoring backup"
+    echo "$diff_output" | sed 's/^/                              /'
+    cp "$backup" "$file"
+    rm -f "$backup"
+    FAILED_TOOLS+=("deno")
+    return 1
+}
+
+restore_backup_if_exists() {
+    local file="$1"
+    local backup="${file}${BACKUP_SUFFIX}"
+
+    if [[ -f "$backup" ]]; then
+        cp "$backup" "$file"
+        rm -f "$backup"
+    fi
 }
 
 ensure_file_exists() {
@@ -794,6 +982,46 @@ remove_matching_lines() {
         $0 ~ match_regex { next }
         { print }
     ' "$file"
+}
+
+remove_yaml_top_level_key() {
+    local file="$1"
+    local key="$2"
+
+    write_file_from_command "$file" awk -v key="$key" '
+        $0 ~ "^" key ":[[:space:]]*" {
+            skip = 1
+            next
+        }
+        skip && $0 ~ /^[^[:space:]#][^:]*:/ {
+            skip = 0
+        }
+        skip { next }
+        { print }
+    ' "$file"
+}
+
+upsert_yaml_scalar() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+
+    remove_yaml_top_level_key "$file" "$key"
+    printf '%s: %s\n' "$key" "$value" >> "$file"
+}
+
+upsert_yaml_array() {
+    local file="$1"
+    local key="$2"
+    shift 2
+    local item
+
+    remove_yaml_top_level_key "$file" "$key"
+    if [[ $# -eq 0 ]]; then
+        return 0
+    fi
+
+    printf '%s: %s\n' "$key" "$(yaml_flow_array "$@")" >> "$file"
 }
 
 upsert_line_in_section() {
@@ -879,6 +1107,13 @@ cleanup_empty_file() {
     fi
 }
 
+cleanup_yaml_marker_only_file() {
+    local file="$1"
+    if [[ -f "$file" ]] && ! grep -vE '^[[:space:]]*(---)?[[:space:]]*$' "$file" >/dev/null 2>&1; then
+        rm -f "$file"
+    fi
+}
+
 toml_quote() {
     local value="$1"
     value=${value//\\/\\\\}
@@ -905,6 +1140,434 @@ yaml_flow_array() {
     done
     result+="]"
     printf '%s' "$result"
+}
+
+json_quote() {
+    local value="$1"
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    printf '"%s"' "$value"
+}
+
+json_flow_array() {
+    local result="["
+    local index=0
+    local item
+    for item in "$@"; do
+        if [[ $index -gt 0 ]]; then
+            result+=", "
+        fi
+        result+="$(json_quote "$item")"
+        index=$((index + 1))
+    done
+    result+="]"
+    printf '%s' "$result"
+}
+
+comma_join() {
+    local result=""
+    local item
+
+    for item in "$@"; do
+        if [[ -n "$result" ]]; then
+            result+=","
+        fi
+        result+="$item"
+    done
+
+    printf '%s' "$result"
+}
+
+shell_quote() {
+    local value="$1"
+    value=${value//\'/\'\\\'\'}
+    printf "'%s'" "$value"
+}
+
+deno_min_age_duration() {
+    printf 'P%sD\n' "$MIN_AGE_DAYS"
+}
+
+build_deno_minimum_dependency_age_config() {
+    local min_age_duration
+    min_age_duration=$(deno_min_age_duration)
+
+    if [[ ${#DENO_EXCEPTIONS[@]} -eq 0 ]]; then
+        printf '  "minimumDependencyAge": "%s"\n' "$min_age_duration"
+        return
+    fi
+
+    printf '  "minimumDependencyAge": {\n'
+    printf '    "age": "%s",\n' "$min_age_duration"
+    printf '    "exclude": %s\n' "$(json_flow_array "${DENO_EXCEPTIONS[@]}")"
+    printf '  }\n'
+}
+
+remove_deno_minimum_dependency_age_config() {
+    local file="$1"
+
+    write_file_from_command "$file" awk '
+        function scrub_strings(line, out) {
+            out = line
+            gsub(/"([^"\\]|\\.)*"/, "\"\"", out)
+            return out
+        }
+        function depth_delta(line, scrubbed, opens, closes) {
+            scrubbed = scrub_strings(line)
+            opens = gsub(/[\{\[]/, "{", scrubbed)
+            closes = gsub(/[\}\]]/, "}", scrubbed)
+            return opens - closes
+        }
+        {
+            if (!skip && $0 ~ /^[[:space:]]*"minimumDependencyAge"[[:space:]]*:/) {
+                skip = 1
+                depth = depth_delta($0)
+                if (depth <= 0) {
+                    skip = 0
+                }
+                next
+            }
+            if (skip) {
+                depth += depth_delta($0)
+                if (depth <= 0) {
+                    skip = 0
+                }
+                next
+            }
+            lines[++n] = $0
+        }
+        END {
+            has_content = 0
+            for (i = 1; i <= n; i++) {
+                if (lines[i] !~ /^[[:space:]]*[{}][,]?[[:space:]]*$/ && lines[i] !~ /^[[:space:]]*$/) {
+                    has_content = 1
+                }
+            }
+            if (!has_content) {
+                exit
+            }
+
+            root_end = 0
+            for (i = n; i >= 1; i--) {
+                if (lines[i] ~ /^[[:space:]]*}[[:space:]]*$/) {
+                    root_end = i
+                    break
+                }
+            }
+            if (root_end) {
+                for (i = root_end - 1; i >= 1; i--) {
+                    if (lines[i] !~ /^[[:space:]]*$/) {
+                        sub(/,[[:space:]]*$/, "", lines[i])
+                        break
+                    }
+                }
+            }
+            for (i = 1; i <= n; i++) {
+                print lines[i]
+            }
+        }
+    ' "$file"
+}
+
+current_deno_minimum_dependency_age_config() {
+    local file="$1"
+
+    awk '
+        function scrub_strings(line, out) {
+            out = line
+            gsub(/"([^"\\]|\\.)*"/, "\"\"", out)
+            return out
+        }
+        function depth_delta(line, scrubbed, opens, closes) {
+            scrubbed = scrub_strings(line)
+            opens = gsub(/[\{\[]/, "{", scrubbed)
+            closes = gsub(/[\}\]]/, "}", scrubbed)
+            return opens - closes
+        }
+        !capture && /^[[:space:]]*"minimumDependencyAge"[[:space:]]*:/ {
+            capture = 1
+            depth = 0
+        }
+        capture {
+            next_depth = depth + depth_delta($0)
+            line = $0
+            if (next_depth <= 0) {
+                sub(/,[[:space:]]*$/, "", line)
+            }
+            print line
+            depth = next_depth
+            if (depth <= 0) {
+                exit
+            }
+        }
+    ' "$file" 2>/dev/null || true
+}
+
+upsert_deno_minimum_dependency_age_config() {
+    local file="$1"
+    local desired_config="$2"
+    local desired_config_encoded
+
+    remove_deno_minimum_dependency_age_config "$file"
+    desired_config_encoded=${desired_config//$'\n'/__SET_MIN_AGE_NL__}
+
+    write_file_from_command "$file" awk -v desired_config="$desired_config_encoded" '
+        BEGIN {
+            desired_count = split(desired_config, desired, /__SET_MIN_AGE_NL__/)
+            if (desired_count > 0 && desired[desired_count] == "") {
+                desired_count--
+            }
+        }
+        {
+            lines[NR] = $0
+            if (!root_start && $0 ~ /^[[:space:]]*\{[[:space:]]*$/) {
+                root_start = NR
+            }
+            if ($0 ~ /^[[:space:]]*\}[[:space:]]*$/) {
+                root_end = NR
+            }
+        }
+        END {
+            if (NR == 0) {
+                print "{"
+                for (j = 1; j <= desired_count; j++) {
+                    print desired[j]
+                }
+                print "}"
+                exit
+            }
+
+            if (NR == 1 && lines[1] ~ /^[[:space:]]*\{[[:space:]]*\}[[:space:]]*$/) {
+                print "{"
+                for (j = 1; j <= desired_count; j++) {
+                    print desired[j]
+                }
+                print "}"
+                exit
+            }
+
+            if (!root_start || !root_end) {
+                for (i = 1; i <= NR; i++) {
+                    print lines[i]
+                }
+                exit
+            }
+
+            has_other = 0
+            for (i = root_start + 1; i < root_end; i++) {
+                if (lines[i] !~ /^[[:space:]]*$/) {
+                    has_other = 1
+                    break
+                }
+            }
+
+            for (i = 1; i <= NR; i++) {
+                print lines[i]
+                if (i == root_start) {
+                    for (j = 1; j <= desired_count; j++) {
+                        line = desired[j]
+                        if (has_other && j == desired_count) {
+                            line = line ","
+                        }
+                        print line
+                    }
+                }
+            }
+        }
+    ' "$file"
+}
+
+upsert_vlt_before_config() {
+    local file="$1"
+    local before_date="$2"
+
+    write_file_from_command "$file" awk -v before_date="$before_date" '
+        function print_before_line(indent, comma) {
+            print indent "\"before\": \"" before_date "\"" comma
+        }
+        {
+            lines[NR] = $0
+            if (!config_start && match($0, /^[[:space:]]*"config"[[:space:]]*:[[:space:]]*\{/)) {
+                config_start = NR
+                config_indent = substr($0, 1, index($0, "\"") - 1)
+                config_child_indent = config_indent "  "
+            } else if (config_start && !config_end && NR > config_start && $0 ~ "^" config_indent "}[,]?[[:space:]]*$") {
+                config_end = NR
+            }
+            if (config_start && !config_end && NR > config_start && $0 ~ /^[[:space:]]*"before"[[:space:]]*:/) {
+                before_line = NR
+            }
+            if ($0 ~ /^[[:space:]]*}[,]?[[:space:]]*$/) {
+                root_end = NR
+            }
+        }
+        END {
+            if (NR == 0) {
+                print "{"
+                print "  \"config\": {"
+                print_before_line("    ", "")
+                print "  }"
+                print "}"
+                exit
+            }
+
+            if (before_line) {
+                for (i = 1; i <= NR; i++) {
+                    if (i == before_line) {
+                        comma = lines[i] ~ /,[[:space:]]*$/ ? "," : ""
+                        print_before_line(config_child_indent, comma)
+                    } else {
+                        print lines[i]
+                    }
+                }
+                exit
+            }
+
+            if (config_start && config_end) {
+                has_config_items = 0
+                for (i = config_start + 1; i < config_end; i++) {
+                    if (lines[i] !~ /^[[:space:]]*$/) {
+                        has_config_items = 1
+                    }
+                }
+                for (i = 1; i <= NR; i++) {
+                    if (i == config_start) {
+                        print lines[i]
+                        print_before_line(config_child_indent, has_config_items ? "," : "")
+                        continue
+                    }
+                    print lines[i]
+                }
+                exit
+            }
+
+            if (root_end) {
+                has_top_items = 0
+                for (i = 1; i < root_end; i++) {
+                    if (lines[i] !~ /^[[:space:]]*$/ && lines[i] !~ /^[[:space:]]*\{[[:space:]]*$/) {
+                        has_top_items = 1
+                    }
+                }
+                for (i = 1; i <= NR; i++) {
+                    if (i == 1 && lines[i] ~ /^[[:space:]]*\{[[:space:]]*$/) {
+                        print lines[i]
+                        print "  \"config\": {"
+                        print_before_line("    ", "")
+                        print "  }" (has_top_items ? "," : "")
+                        continue
+                    }
+                    print lines[i]
+                }
+                exit
+            }
+
+            for (i = 1; i <= NR; i++) {
+                print lines[i]
+            }
+        }
+    ' "$file"
+}
+
+remove_vlt_before_config() {
+    local file="$1"
+
+    write_file_from_command "$file" awk '
+        function strip_comma(line) {
+            sub(/,[[:space:]]*$/, "", line)
+            return line
+        }
+        {
+            lines[NR] = $0
+            if (!config_start && match($0, /^[[:space:]]*"config"[[:space:]]*:[[:space:]]*\{/)) {
+                config_start = NR
+                config_indent = substr($0, 1, index($0, "\"") - 1)
+            } else if (config_start && !config_end && NR > config_start && $0 ~ "^" config_indent "}[,]?[[:space:]]*$") {
+                config_end = NR
+            }
+            if (config_start && !config_end && NR > config_start && $0 ~ /^[[:space:]]*"before"[[:space:]]*:/) {
+                before_line = NR
+            }
+        }
+        END {
+            if (!before_line) {
+                for (i = 1; i <= NR; i++) {
+                    print lines[i]
+                }
+                exit
+            }
+
+            has_other_config = 0
+            for (i = config_start + 1; i < config_end; i++) {
+                if (i != before_line && lines[i] !~ /^[[:space:]]*$/) {
+                    has_other_config = 1
+                }
+            }
+
+            has_other_top = 0
+            for (i = 1; i <= NR; i++) {
+                if (i >= config_start && i <= config_end) {
+                    continue
+                }
+                if (lines[i] !~ /^[[:space:]]*[{}][,]?[[:space:]]*$/ && lines[i] !~ /^[[:space:]]*$/) {
+                    has_other_top = 1
+                }
+            }
+
+            if (!has_other_config && !has_other_top) {
+                exit
+            }
+
+            if (!has_other_config) {
+                prev = 0
+                following = 0
+                for (i = config_start - 1; i >= 1; i--) {
+                    if (lines[i] !~ /^[[:space:]]*$/ && lines[i] !~ /^[[:space:]]*\{[[:space:]]*$/) {
+                        prev = i
+                        break
+                    }
+                }
+                for (i = config_end + 1; i <= NR; i++) {
+                    if (lines[i] !~ /^[[:space:]]*$/ && lines[i] !~ /^[[:space:]]*}[,]?[[:space:]]*$/) {
+                        following = i
+                        break
+                    }
+                }
+                if (prev && !following) {
+                    lines[prev] = strip_comma(lines[prev])
+                }
+                for (i = 1; i <= NR; i++) {
+                    if (i >= config_start && i <= config_end) {
+                        continue
+                    }
+                    print lines[i]
+                }
+                exit
+            }
+
+            prev = 0
+            following = 0
+            for (i = config_start + 1; i < before_line; i++) {
+                if (lines[i] !~ /^[[:space:]]*$/) {
+                    prev = i
+                }
+            }
+            for (i = before_line + 1; i < config_end; i++) {
+                if (lines[i] !~ /^[[:space:]]*$/) {
+                    following = i
+                    break
+                }
+            }
+            if (prev && !following) {
+                lines[prev] = strip_comma(lines[prev])
+            }
+            for (i = 1; i <= NR; i++) {
+                if (i == before_line) {
+                    continue
+                }
+                print lines[i]
+            }
+        }
+    ' "$file"
 }
 
 toml_array() {
@@ -992,15 +1655,40 @@ run_preflight_checks() {
 
     PREFLIGHT_FAILED_TOOLS=()
 
-    ensure_tool_version "pip" "26.0" "uploaded-prior-to" || status=1
+    ensure_tool_version "pip" "26.1.0" "uploaded-prior-to duration" || status=1
 
     installed=$(lookup_detected_tool_field "uv" installed)
     version=$(lookup_detected_tool_field "uv" version)
     path=$(lookup_detected_tool_field "uv" path)
     if [[ "$installed" == "yes" ]]; then
-        record_preflight_ok "uv" "$installed" "$version" "$path" "exclude-newer supported; no documented minimum version"
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_fail "uv" "$installed" "$version" "$path" "relative exclude-newer requires version detection; installed version could not be determined" "uv"
+            status=1
+        elif version_gte "$version" "0.9.17"; then
+            record_preflight_ok "uv" "$installed" "$version" "$path" "relative exclude-newer requires >= 0.9.17"
+        else
+            record_preflight_fail "uv" "$installed" "$version" "$path" "relative exclude-newer requires >= 0.9.17" "uv"
+            status=1
+        fi
     else
         record_preflight_skip "uv" "$installed" "$version" "$path" "not installed; config can still be written"
+    fi
+
+    installed=$(lookup_detected_tool_field "Poetry" installed)
+    version=$(lookup_detected_tool_field "Poetry" version)
+    path=$(lookup_detected_tool_field "Poetry" path)
+    if [[ "$installed" == "yes" ]]; then
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_fail "Poetry" "$installed" "$version" "$path" "solver.min-release-age requires version detection; installed version could not be determined" "poetry"
+            status=1
+        elif version_gte "$version" "2.4.0"; then
+            record_preflight_ok "Poetry" "$installed" "$version" "$path" "solver.min-release-age requires >= 2.4.0"
+        else
+            record_preflight_fail "Poetry" "$installed" "$version" "$path" "solver.min-release-age requires >= 2.4.0" "poetry"
+            status=1
+        fi
+    else
+        record_preflight_skip "Poetry" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
 
     ensure_tool_version "npm" "11.10.0" "min-release-age" || status=1
@@ -1019,13 +1707,58 @@ run_preflight_checks() {
 
     ensure_tool_version "pnpm" "$required_pnpm_version" "$pnpm_feature" || status=1
 
+    installed=$(lookup_detected_tool_field "pnpm" installed)
+    version=$(lookup_detected_tool_field "pnpm" version)
+    path=$(lookup_detected_tool_field "pnpm" path)
+    if [[ "$installed" == "yes" && -n "$version" && "$version" != "unknown" ]]; then
+        if version_gte "$version" "11.0.0"; then
+            record_preflight_ok "pnpm config" "$installed" "$version" "$path" "global settings use config.yaml"
+        else
+            record_preflight_ok "pnpm config" "$installed" "$version" "$path" "global settings use legacy rc"
+        fi
+    fi
+
     installed=$(lookup_detected_tool_field "bun" installed)
     version=$(lookup_detected_tool_field "bun" version)
     path=$(lookup_detected_tool_field "bun" path)
     if [[ "$installed" == "yes" ]]; then
-        record_preflight_ok "bun" "$installed" "$version" "$path" "minimumReleaseAge supported; no documented minimum version"
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_fail "bun" "$installed" "$version" "$path" "minimumReleaseAge requires version detection; installed version could not be determined" "bun"
+            status=1
+        elif version_gte "$version" "1.3.0"; then
+            record_preflight_ok "bun" "$installed" "$version" "$path" "minimumReleaseAge requires >= 1.3.0"
+        else
+            record_preflight_fail "bun" "$installed" "$version" "$path" "minimumReleaseAge requires >= 1.3.0" "bun"
+            status=1
+        fi
     else
         record_preflight_skip "bun" "$installed" "$version" "$path" "not installed; config can still be written"
+    fi
+
+    installed=$(lookup_detected_tool_field "vlt" installed)
+    version=$(lookup_detected_tool_field "vlt" version)
+    path=$(lookup_detected_tool_field "vlt" path)
+    if [[ "$installed" == "yes" ]]; then
+        record_preflight_ok "vlt" "$installed" "$version" "$path" "before config supported; no documented minimum version"
+    else
+        record_preflight_skip "vlt" "$installed" "$version" "$path" "not installed; config can still be written"
+    fi
+
+    installed=$(lookup_detected_tool_field "Bundler" installed)
+    version=$(lookup_detected_tool_field "Bundler" version)
+    path=$(lookup_detected_tool_field "Bundler" path)
+    if [[ "$installed" == "yes" ]]; then
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_fail "Bundler" "$installed" "$version" "$path" "cooldown requires version detection; installed version could not be determined" "bundler"
+            status=1
+        elif version_gte "$version" "4.0.15"; then
+            record_preflight_ok "Bundler" "$installed" "$version" "$path" "cooldown requires >= 4.0.15"
+        else
+            record_preflight_fail "Bundler" "$installed" "$version" "$path" "cooldown requires >= 4.0.15" "bundler"
+            status=1
+        fi
+    else
+        record_preflight_skip "Bundler" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
 
     installed=$(lookup_detected_tool_field "yarn v1" installed)
@@ -1044,26 +1777,18 @@ run_preflight_checks() {
         if [[ -z "$version" || "$version" == "unknown" ]]; then
             record_preflight_fail "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires version detection; installed version could not be determined" "yarn-berry"
             status=1
-        elif version_gte "$version" "4.10.0"; then
-            record_preflight_ok "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.10.0"
+        elif version_gte "$version" "4.12.0"; then
+            record_preflight_ok "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.12.0"
         else
-            record_preflight_fail "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.10.0" "yarn-berry"
+            record_preflight_fail "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.12.0" "yarn-berry"
             status=1
         fi
     else
         record_preflight_skip "yarn v2+" "$installed" "$version" "$path" "not installed; config may still be written"
     fi
 
-    ensure_tool_version "deno" "2.5.5" "minimumDependencyAge" || status=1
-
-    installed=$(lookup_detected_tool_field "pixi" installed)
-    version=$(lookup_detected_tool_field "pixi" version)
-    path=$(lookup_detected_tool_field "pixi" path)
-    if [[ "$installed" == "yes" ]]; then
-        record_preflight_ok "pixi" "$installed" "$version" "$path" "exclude-newer supported; no documented minimum version"
-    else
-        record_preflight_skip "pixi" "$installed" "$version" "$path" "not installed; wrapper can still be written"
-    fi
+    ensure_tool_version "deno" "2.6.0" "minimumDependencyAge" || status=1
+    ensure_tool_version "pixi" "0.47.0" "exclude-newer" || status=1
 
     return "$status"
 }
@@ -1076,6 +1801,7 @@ run_remove_tools() {
             pip) remove_pip ;;
             uv) remove_uv ;;
             uv-cron) remove_cron_uv ;;
+            poetry) remove_poetry ;;
             npm) remove_npm ;;
             pnpm) remove_pnpm ;;
             bun) remove_bun ;;
@@ -1083,6 +1809,9 @@ run_remove_tools() {
             yarn-berry) remove_yarn_berry ;;
             deno) remove_deno ;;
             pixi) remove_pixi ;;
+            vlt) remove_vlt ;;
+            vlt-cron) remove_cron_vlt ;;
+            bundler) remove_bundler ;;
         esac
     done
 }
@@ -1092,6 +1821,7 @@ print_config_files() {
     print_separator
     echo "  pip            $(tool_config_path pip)"
     echo "  uv             $(tool_config_path uv)"
+    echo "  Poetry         $(tool_config_path poetry)"
     echo "  npm            $(tool_config_path npm)"
     echo "  pnpm           $(tool_config_path pnpm)"
     echo "  bun            $(tool_config_path bun)"
@@ -1099,17 +1829,19 @@ print_config_files() {
     echo "  yarn v2+       $(tool_config_path yarn-berry)"
     echo "  deno           $(tool_config_path deno)"
     echo "  pixi           $(tool_config_path pixi)"
+    echo "  vlt            $(tool_config_path vlt)"
+    echo "  Bundler        $(tool_config_path bundler)"
     echo ""
 }
 
 setup_pip() {
     local pip_conf_dir="$HOME/.config/pip"
     local pip_conf="$pip_conf_dir/pip.conf"
-    local cutoff_timestamp desired_line detail status current current_cutoff
+    local uploaded_prior_to desired_line detail status current current_value
 
-    cutoff_timestamp=$(pip_cutoff_timestamp)
-    desired_line="uploaded-prior-to = ${cutoff_timestamp}"
-    detail=$(pip_detail_text "$cutoff_timestamp")
+    uploaded_prior_to=$(pip_uploaded_prior_to_value)
+    desired_line="uploaded-prior-to = ${uploaded_prior_to}"
+    detail=$(pip_detail_text "$uploaded_prior_to")
 
     mkdir -p "$pip_conf_dir"
 
@@ -1125,9 +1857,9 @@ setup_pip() {
 
     status="added"
     if grep -q '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" 2>/dev/null; then
-        current_cutoff=$(grep '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" | head -1 | sed 's/.*= *//')
+        current_value=$(grep '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" | head -1 | sed 's/.*= *//')
         status="updated"
-        detail="${current_cutoff} --> ${detail}"
+        detail="${current_value} --> ${detail}"
     elif grep -q '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" 2>/dev/null; then
         current=$(grep '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" | head -1 | sed 's/.*= *//')
         status="updated"
@@ -1150,9 +1882,9 @@ setup_pip() {
 setup_uv() {
     local uv_conf_dir="$HOME/.config/uv"
     local uv_conf="$uv_conf_dir/uv.toml"
-    local exclude_newer_date desired_exception_line current_exceptions desired_exceptions detail status current
+    local exclude_newer_value desired_exception_line current_exceptions desired_exceptions detail status current
 
-    exclude_newer_date=$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")
+    exclude_newer_value="P${MIN_AGE_DAYS}D"
     desired_exceptions=""
     if [[ ${#UV_EXCEPTIONS[@]} -gt 0 ]]; then
         desired_exceptions=$(build_uv_exception_line)
@@ -1162,9 +1894,9 @@ setup_uv() {
     touch "$uv_conf"
 
     current_exceptions=$(current_lines_or_empty "$uv_conf" '^exclude-newer-package[[:space:]]*=')
-    if grep -q "^exclude-newer = \"${exclude_newer_date}\"$" "$uv_conf" 2>/dev/null \
+    if grep -q "^exclude-newer = \"${exclude_newer_value}\"$" "$uv_conf" 2>/dev/null \
         && [[ "$current_exceptions" == "$desired_exceptions" ]]; then
-        emit_config_status "uv" "uv" "ok" "exclude-newer = \"${exclude_newer_date}\"$(exception_count_suffix "${#UV_EXCEPTIONS[@]}" "exceptions")"
+        emit_config_status "uv" "uv" "ok" "exclude-newer = \"${exclude_newer_value}\"$(exception_count_suffix "${#UV_EXCEPTIONS[@]}" "exceptions")"
         SKIPPED_TOOLS+=("uv")
         return 0
     fi
@@ -1172,13 +1904,13 @@ setup_uv() {
     backup_if_exists "$uv_conf"
 
     status="added"
-    detail="exclude-newer = \"${exclude_newer_date}\"$(exception_count_suffix "${#UV_EXCEPTIONS[@]}" "exceptions")"
+    detail="exclude-newer = \"${exclude_newer_value}\"$(exception_count_suffix "${#UV_EXCEPTIONS[@]}" "exceptions")"
     if grep -q '^exclude-newer[[:space:]]*=' "$uv_conf" 2>/dev/null; then
         current=$(grep '^exclude-newer[[:space:]]*=' "$uv_conf" | head -1 | sed 's/.*= *//')
         status="updated"
         detail="${current} --> ${detail}"
     fi
-    replace_or_append_line "$uv_conf" '^exclude-newer[[:space:]]*=' "exclude-newer = \"${exclude_newer_date}\""
+    replace_or_append_line "$uv_conf" '^exclude-newer[[:space:]]*=' "exclude-newer = \"${exclude_newer_value}\""
 
     if [[ ${#UV_EXCEPTIONS[@]} -gt 0 ]]; then
         desired_exception_line=$(build_uv_exception_line)
@@ -1194,7 +1926,64 @@ setup_uv() {
     fi
 }
 
+setup_poetry() {
+    local poetry_conf="$POETRY_CONFIG_PATH"
+    local desired_age_line="min-release-age = ${MIN_AGE_DAYS}"
+    local desired_package_exceptions=""
+    local desired_source_exceptions=""
+    local current_package_exceptions current_source_exceptions detail status current
+
+    ensure_file_exists "$poetry_conf"
+
+    if [[ ${#POETRY_EXCEPTIONS[@]} -gt 0 ]]; then
+        desired_package_exceptions="min-release-age-exclude = $(toml_quote "$(comma_join "${POETRY_EXCEPTIONS[@]}")")"
+    fi
+    if [[ ${#POETRY_SOURCE_EXCEPTIONS[@]} -gt 0 ]]; then
+        desired_source_exceptions="min-release-age-exclude-source = $(toml_quote "$(comma_join "${POETRY_SOURCE_EXCEPTIONS[@]}")")"
+    fi
+
+    current_package_exceptions=$(current_lines_or_empty "$poetry_conf" '^min-release-age-exclude[[:space:]]*=')
+    current_source_exceptions=$(current_lines_or_empty "$poetry_conf" '^min-release-age-exclude-source[[:space:]]*=')
+
+    if grep -q "^${desired_age_line}$" "$poetry_conf" 2>/dev/null \
+        && [[ "$current_package_exceptions" == "$desired_package_exceptions" ]] \
+        && [[ "$current_source_exceptions" == "$desired_source_exceptions" ]]; then
+        emit_config_status "Poetry" "poetry" "ok" "min-release-age = ${MIN_AGE_DAYS}$(exception_count_suffix "${#POETRY_EXCEPTIONS[@]}" "package-exceptions")$(exception_count_suffix "${#POETRY_SOURCE_EXCEPTIONS[@]}" "source-exceptions")"
+        SKIPPED_TOOLS+=("poetry")
+        return 0
+    fi
+
+    backup_if_exists "$poetry_conf"
+
+    status="added"
+    detail="min-release-age = ${MIN_AGE_DAYS}$(exception_count_suffix "${#POETRY_EXCEPTIONS[@]}" "package-exceptions")$(exception_count_suffix "${#POETRY_SOURCE_EXCEPTIONS[@]}" "source-exceptions")"
+    if grep -q '^min-release-age[[:space:]]*=' "$poetry_conf" 2>/dev/null; then
+        current=$(grep '^min-release-age[[:space:]]*=' "$poetry_conf" | head -1 | sed 's/.*= *//')
+        status="updated"
+        detail="${current} --> ${detail}"
+    fi
+
+    upsert_line_in_section "$poetry_conf" "[solver]" '^min-release-age[[:space:]]*=' "$desired_age_line"
+    if [[ ${#POETRY_EXCEPTIONS[@]} -gt 0 ]]; then
+        upsert_line_in_section "$poetry_conf" "[solver]" '^min-release-age-exclude[[:space:]]*=' "$desired_package_exceptions"
+    else
+        remove_matching_lines "$poetry_conf" '^min-release-age-exclude[[:space:]]*='
+    fi
+    if [[ ${#POETRY_SOURCE_EXCEPTIONS[@]} -gt 0 ]]; then
+        upsert_line_in_section "$poetry_conf" "[solver]" '^min-release-age-exclude-source[[:space:]]*=' "$desired_source_exceptions"
+    else
+        remove_matching_lines "$poetry_conf" '^min-release-age-exclude-source[[:space:]]*='
+    fi
+
+    if verify_and_finalize "$poetry_conf" "poetry" 'min-release-age\|\[solver\]'; then
+        emit_config_status "Poetry" "poetry" "$status" "$detail"
+    else
+        emit_config_status "Poetry" "poetry" "FAIL" "$detail"
+    fi
+}
+
 CRON_MARKER="# set-minimum-package-release-age: uv exclude-newer"
+VLT_CRON_MARKER="# set-minimum-package-release-age: vlt before"
 
 setup_cron_uv() {
     local uv_conf="$HOME/.config/uv/uv.toml"
@@ -1220,15 +2009,49 @@ setup_cron_uv() {
     fi
 }
 
+setup_cron_vlt() {
+    local min_age="${MIN_AGE_DAYS}"
+
+    if crontab -l 2>/dev/null | grep -qF "$VLT_CRON_MARKER"; then
+        emit_config_status "vlt cron" "vlt-cron" "ok" "daily job installed"
+        SKIPPED_TOOLS+=("cron-vlt")
+        return 0
+    fi
+
+    local cron_cmd
+    cron_cmd=$(platform_build_vlt_cron_command "$min_age" "$VLT_CONFIG_PATH")
+
+    ( crontab -l 2>/dev/null || true; echo "$cron_cmd" ) | crontab -
+
+    if crontab -l 2>/dev/null | grep -qF "$VLT_CRON_MARKER"; then
+        emit_config_status "vlt cron" "vlt-cron" "added" "daily at midnight (crontab -l to verify)"
+        UPDATED_TOOLS+=("cron-vlt")
+    else
+        emit_config_status "vlt cron" "vlt-cron" "FAIL" "could not install cron job"
+        FAILED_TOOLS+=("cron-vlt")
+    fi
+}
+
 setup_npm() {
     local npmrc="$HOME/.npmrc"
     local desired_line="min-release-age=${MIN_AGE_DAYS}"
-    local detail status current
+    local desired_exceptions="" current_exceptions item detail status current
 
     touch "$npmrc"
 
-    if grep -q "^${desired_line}$" "$npmrc" 2>/dev/null; then
-        emit_config_status "npm" "npm" "ok" "$desired_line"
+    if [[ ${#NPM_EXCEPTIONS[@]} -gt 0 ]]; then
+        for item in "${NPM_EXCEPTIONS[@]}"; do
+            desired_exceptions+=$'min-release-age-exclude[]='
+            desired_exceptions+="$item"
+            desired_exceptions+=$'\n'
+        done
+        desired_exceptions=${desired_exceptions%$'\n'}
+    fi
+
+    current_exceptions=$(current_lines_or_empty "$npmrc" '^min-release-age-exclude')
+    if grep -q "^${desired_line}$" "$npmrc" 2>/dev/null \
+        && [[ "$current_exceptions" == "$desired_exceptions" ]]; then
+        emit_config_status "npm" "npm" "ok" "${desired_line}$(exception_count_suffix "${#NPM_EXCEPTIONS[@]}" "exceptions")"
         SKIPPED_TOOLS+=("npm")
         return 0
     fi
@@ -1236,14 +2059,20 @@ setup_npm() {
     backup_if_exists "$npmrc"
 
     status="added"
-    detail="$desired_line"
-    if grep -q '^min-release-age' "$npmrc" 2>/dev/null; then
-        current=$(grep '^min-release-age' "$npmrc" | head -1 | sed 's/.*=//')
+    detail="${desired_line}$(exception_count_suffix "${#NPM_EXCEPTIONS[@]}" "exceptions")"
+    if grep -q '^min-release-age=' "$npmrc" 2>/dev/null; then
+        current=$(grep '^min-release-age=' "$npmrc" | head -1 | sed 's/.*=//')
         status="updated"
-        detail="${current} --> ${MIN_AGE_DAYS}"
+        detail="${current} --> ${MIN_AGE_DAYS}$(exception_count_suffix "${#NPM_EXCEPTIONS[@]}" "exceptions")"
     fi
 
     replace_or_append_line "$npmrc" '^min-release-age=' "$desired_line"
+    remove_matching_lines "$npmrc" '^min-release-age-exclude'
+    if [[ ${#NPM_EXCEPTIONS[@]} -gt 0 ]]; then
+        for item in "${NPM_EXCEPTIONS[@]}"; do
+            printf 'min-release-age-exclude[]=%s\n' "$item" >> "$npmrc"
+        done
+    fi
     if verify_and_finalize "$npmrc" "npm" 'min-release-age'; then
         emit_config_status "npm" "npm" "$status" "$detail"
     else
@@ -1252,48 +2081,93 @@ setup_npm() {
 }
 
 setup_pnpm() {
+    local pnpm_config
     local min_age_minutes=$(( MIN_AGE_DAYS * 1440 ))
-    local desired_line="minimum-release-age=${min_age_minutes}"
-    local desired_exceptions current_exceptions item detail status current
+    local desired_line desired_exceptions current_age current_exceptions item detail status current
 
-    ensure_file_exists "$PNPM_RC_PATH"
+    pnpm_config=$(pnpm_active_config_path)
+    ensure_file_exists "$pnpm_config"
+
+    if pnpm_active_config_is_yaml; then
+        desired_line="minimumReleaseAge: ${min_age_minutes}"
+    else
+        desired_line="minimum-release-age=${min_age_minutes}"
+    fi
+
+    current_age=$(current_lines_or_empty "$pnpm_config" '^minimumReleaseAge:[[:space:]]*')
+    if [[ -z "$current_age" ]]; then
+        current_age=$(current_lines_or_empty "$pnpm_config" '^minimum-release-age=')
+    fi
+
     desired_exceptions=""
     if [[ ${#PNPM_EXCEPTIONS[@]} -gt 0 ]]; then
-        for item in "${PNPM_EXCEPTIONS[@]}"; do
-            desired_exceptions+=$'minimum-release-age-exclude[]='
-            desired_exceptions+="$item"
-            desired_exceptions+=$'\n'
-        done
-        desired_exceptions=${desired_exceptions%$'\n'}
+        if pnpm_active_config_is_yaml; then
+            desired_exceptions="minimumReleaseAgeExclude: $(yaml_flow_array "${PNPM_EXCEPTIONS[@]}")"
+        else
+            for item in "${PNPM_EXCEPTIONS[@]}"; do
+                desired_exceptions+=$'minimum-release-age-exclude[]='
+                desired_exceptions+="$item"
+                desired_exceptions+=$'\n'
+            done
+            desired_exceptions=${desired_exceptions%$'\n'}
+        fi
     fi
-    current_exceptions=$(current_lines_or_empty "$PNPM_RC_PATH" '^minimum-release-age-exclude\[\]=')
 
-    if grep -q "^${desired_line}$" "$PNPM_RC_PATH" 2>/dev/null \
+    current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimumReleaseAgeExclude:')
+    if [[ -z "$current_exceptions" ]]; then
+        current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimum-release-age-exclude')
+    fi
+
+    if grep -q "^${desired_line}$" "$pnpm_config" 2>/dev/null \
         && [[ "$current_exceptions" == "$desired_exceptions" ]]; then
-        emit_config_status "pnpm" "pnpm" "ok" "${desired_line}$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
+        emit_config_status "pnpm" "pnpm" "ok" "${desired_line} ($(pnpm_active_config_label))$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
         SKIPPED_TOOLS+=("pnpm")
         return 0
     fi
 
-    backup_if_exists "$PNPM_RC_PATH"
+    backup_if_exists "$pnpm_config"
 
     status="added"
-    detail="${desired_line}$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
-    if grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null; then
-        current=$(grep '^minimum-release-age=' "$PNPM_RC_PATH" | head -1 | sed 's/.*=//')
+    detail="${desired_line} ($(pnpm_active_config_label))$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
+    if [[ -n "$current_age" ]]; then
+        current=$(printf '%s\n' "$current_age" | head -1 | sed 's/^[^:=]*[:=] *//')
         status="updated"
-        detail="${current} --> ${min_age_minutes}$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
-    fi
-    replace_or_append_line "$PNPM_RC_PATH" '^minimum-release-age=' "$desired_line"
-
-    remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age-exclude\\[\\]='
-    if [[ ${#PNPM_EXCEPTIONS[@]} -gt 0 ]]; then
-        for item in "${PNPM_EXCEPTIONS[@]}"; do
-            printf 'minimum-release-age-exclude[]=%s\n' "$item" >> "$PNPM_RC_PATH"
-        done
+        detail="${current} --> ${min_age_minutes} ($(pnpm_active_config_label))$(exception_count_suffix "${#PNPM_EXCEPTIONS[@]}" "exceptions")"
     fi
 
-    if verify_and_finalize "$PNPM_RC_PATH" "pnpm" 'minimum-release-age'; then
+    if pnpm_active_config_is_yaml; then
+        if [[ -f "$PNPM_RC_PATH" ]] \
+            && { grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null || grep -q '^minimum-release-age-exclude' "$PNPM_RC_PATH" 2>/dev/null; }; then
+            backup_if_exists "$PNPM_RC_PATH"
+            remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age='
+            remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age-exclude'
+            strip_file_if_whitespace_only "$PNPM_RC_PATH"
+            if ! verify_file_changes "$PNPM_RC_PATH" 'minimum-release-age'; then
+                FAILED_TOOLS+=("pnpm")
+                emit_config_status "pnpm" "pnpm" "FAIL" "$detail"
+                return 0
+            fi
+            cleanup_empty_file "$PNPM_RC_PATH"
+        fi
+        upsert_yaml_scalar "$pnpm_config" "minimumReleaseAge" "$min_age_minutes"
+        if [[ ${#PNPM_EXCEPTIONS[@]} -gt 0 ]]; then
+            upsert_yaml_array "$pnpm_config" "minimumReleaseAgeExclude" "${PNPM_EXCEPTIONS[@]}"
+        else
+            remove_yaml_top_level_key "$pnpm_config" "minimumReleaseAgeExclude"
+        fi
+        remove_matching_lines "$pnpm_config" '^minimum-release-age='
+        remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude'
+    else
+        replace_or_append_line "$pnpm_config" '^minimum-release-age=' "$desired_line"
+        remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude'
+        if [[ ${#PNPM_EXCEPTIONS[@]} -gt 0 ]]; then
+            for item in "${PNPM_EXCEPTIONS[@]}"; do
+                printf 'minimum-release-age-exclude[]=%s\n' "$item" >> "$pnpm_config"
+            done
+        fi
+    fi
+
+    if verify_and_finalize "$pnpm_config" "pnpm" 'minimumReleaseAge\|minimum-release-age'; then
         emit_config_status "pnpm" "pnpm" "$status" "$detail"
     else
         emit_config_status "pnpm" "pnpm" "FAIL" "$detail"
@@ -1344,6 +2218,48 @@ setup_bun() {
         emit_config_status "bun" "bun" "$status" "$detail"
     else
         emit_config_status "bun" "bun" "FAIL" "$detail"
+    fi
+}
+
+setup_deno() {
+    local min_age_duration
+    local desired_config current_config detail status current
+
+    min_age_duration=$(deno_min_age_duration)
+    desired_config=$(build_deno_minimum_dependency_age_config)
+    detail="minimumDependencyAge: ${min_age_duration}$(exception_count_suffix "${#DENO_EXCEPTIONS[@]}" "exceptions")"
+
+    ensure_file_exists "$deno_config"
+    strip_file_if_whitespace_only "$deno_config"
+
+    current_config=$(current_deno_minimum_dependency_age_config "$deno_config")
+    if [[ "$current_config" == "$desired_config" ]]; then
+        emit_config_status "deno" "deno" "ok" "$detail"
+        SKIPPED_TOOLS+=("deno")
+        return 0
+    fi
+
+    backup_if_exists "$deno_config"
+
+    status="added"
+    if grep -q '^[[:space:]]*"minimumDependencyAge"[[:space:]]*:' "$deno_config" 2>/dev/null; then
+        current=$(grep '^[[:space:]]*"minimumDependencyAge"[[:space:]]*:' "$deno_config" | head -1 | sed 's/.*: *//; s/[",]//g')
+        status="updated"
+        detail="${current} --> ${min_age_duration}$(exception_count_suffix "${#DENO_EXCEPTIONS[@]}" "exceptions")"
+    fi
+
+    upsert_deno_minimum_dependency_age_config "$deno_config" "$desired_config"
+    if [[ "$(current_deno_minimum_dependency_age_config "$deno_config")" != "$desired_config" ]]; then
+        restore_backup_if_exists "$deno_config"
+        FAILED_TOOLS+=("deno")
+        emit_config_status "deno" "deno" "FAIL" "could not write minimumDependencyAge to deno.json"
+        return 0
+    fi
+
+    if verify_deno_and_finalize "$deno_config"; then
+        emit_config_status "deno" "deno" "$status" "$detail"
+    else
+        emit_config_status "deno" "deno" "FAIL" "$detail"
     fi
 }
 
@@ -1639,13 +2555,79 @@ setup_pixi() {
         "--exclude-newer ${MIN_AGE_DAYS}d"
 }
 
+setup_vlt() {
+    local before_date desired_line current detail status
+
+    before_date=$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")
+    desired_line="\"before\": \"${before_date}\""
+    detail="before = ${before_date} (${MIN_AGE_DAYS}d window)"
+
+    ensure_file_exists "$VLT_CONFIG_PATH"
+
+    if grep -q "^[[:space:]]*${desired_line}[,]*[[:space:]]*$" "$VLT_CONFIG_PATH" 2>/dev/null; then
+        emit_config_status "vlt" "vlt" "ok" "$detail"
+        SKIPPED_TOOLS+=("vlt")
+        return 0
+    fi
+
+    backup_if_exists "$VLT_CONFIG_PATH"
+
+    status="added"
+    if grep -q '^[[:space:]]*"before"[[:space:]]*:' "$VLT_CONFIG_PATH" 2>/dev/null; then
+        current=$(grep '^[[:space:]]*"before"[[:space:]]*:' "$VLT_CONFIG_PATH" | head -1 | sed 's/.*: *"//; s/".*//')
+        status="updated"
+        detail="${current} --> ${before_date} (${MIN_AGE_DAYS}d window)"
+    fi
+
+    upsert_vlt_before_config "$VLT_CONFIG_PATH" "$before_date"
+    if verify_and_finalize "$VLT_CONFIG_PATH" "vlt" '"before"\|"config"\|^[{}][,]*$'; then
+        emit_config_status "vlt" "vlt" "$status" "$detail"
+    else
+        emit_config_status "vlt" "vlt" "FAIL" "$detail"
+    fi
+}
+
+setup_bundler() {
+    local bundler_conf="$BUNDLER_CONFIG_PATH"
+    local desired_line="BUNDLE_COOLDOWN: \"${MIN_AGE_DAYS}\""
+    local detail status current
+
+    ensure_file_exists "$bundler_conf"
+    if ! grep -q '[^[:space:]]' "$bundler_conf" 2>/dev/null; then
+        printf '%s\n' '---' > "$bundler_conf"
+    fi
+
+    if grep -q "^${desired_line}$" "$bundler_conf" 2>/dev/null; then
+        emit_config_status "Bundler" "bundler" "ok" "cooldown = ${MIN_AGE_DAYS}d"
+        SKIPPED_TOOLS+=("bundler")
+        return 0
+    fi
+
+    backup_if_exists "$bundler_conf"
+
+    status="added"
+    detail="cooldown = ${MIN_AGE_DAYS}d"
+    if grep -q '^BUNDLE_COOLDOWN:' "$bundler_conf" 2>/dev/null; then
+        current=$(grep '^BUNDLE_COOLDOWN:' "$bundler_conf" | head -1 | sed 's/^[^:]*: *//; s/"//g')
+        status="updated"
+        detail="${current} --> ${MIN_AGE_DAYS}d"
+    fi
+
+    replace_or_append_line "$bundler_conf" '^BUNDLE_COOLDOWN:' "$desired_line"
+    if verify_and_finalize "$bundler_conf" "bundler" 'BUNDLE_COOLDOWN\|---'; then
+        emit_config_status "Bundler" "bundler" "$status" "$detail"
+    else
+        emit_config_status "Bundler" "bundler" "FAIL" "$detail"
+    fi
+}
+
 remove_pip() {
     local pip_conf="$HOME/.config/pip/pip.conf"
     local current detail
-    local cutoff_timestamp
+    local uploaded_prior_to
 
-    cutoff_timestamp=$(pip_cutoff_timestamp)
-    detail=$(pip_detail_text "$cutoff_timestamp")
+    uploaded_prior_to=$(pip_uploaded_prior_to_value)
+    detail=$(pip_detail_text "$uploaded_prior_to")
 
     if ! grep -q '^[[:space:]]*uploaded-prior-to[[:space:]]*=' "$pip_conf" 2>/dev/null \
         && ! grep -q '^[[:space:]]*min-age[[:space:]]*=' "$pip_conf" 2>/dev/null; then
@@ -1703,6 +2685,35 @@ remove_uv() {
     cleanup_empty_file "$uv_conf"
 }
 
+remove_poetry() {
+    local poetry_conf="$POETRY_CONFIG_PATH"
+
+    if ! grep -q '^min-release-age[[:space:]]*=' "$poetry_conf" 2>/dev/null \
+        && ! grep -q '^min-release-age-exclude[[:space:]]*=' "$poetry_conf" 2>/dev/null \
+        && ! grep -q '^min-release-age-exclude-source[[:space:]]*=' "$poetry_conf" 2>/dev/null; then
+        emit_config_status "Poetry" "poetry" "ok" "min-release-age settings not present"
+        SKIPPED_TOOLS+=("poetry")
+        return 0
+    fi
+
+    backup_if_exists "$poetry_conf"
+    remove_matching_lines "$poetry_conf" '^min-release-age[[:space:]]*='
+    remove_matching_lines "$poetry_conf" '^min-release-age-exclude[[:space:]]*='
+    remove_matching_lines "$poetry_conf" '^min-release-age-exclude-source[[:space:]]*='
+
+    if grep -q '^\[solver\]' "$poetry_conf" 2>/dev/null && ! section_has_content "$poetry_conf" "[solver]"; then
+        remove_matching_lines "$poetry_conf" '^\\[solver\\]$'
+    fi
+
+    strip_file_if_whitespace_only "$poetry_conf"
+    if verify_and_finalize "$poetry_conf" "poetry" 'min-release-age\|\[solver\]'; then
+        emit_config_status "Poetry" "poetry" "removed" "min-release-age settings"
+    else
+        emit_config_status "Poetry" "poetry" "FAIL" "min-release-age settings"
+    fi
+    cleanup_empty_file "$poetry_conf"
+}
+
 remove_cron_uv() {
     if ! crontab -l 2>/dev/null | grep -qF "$CRON_MARKER"; then
         emit_config_status "uv cron" "uv-cron" "ok" "cron job not present"
@@ -1727,49 +2738,82 @@ remove_cron_uv() {
     fi
 }
 
+remove_cron_vlt() {
+    if ! crontab -l 2>/dev/null | grep -qF "$VLT_CRON_MARKER"; then
+        emit_config_status "vlt cron" "vlt-cron" "ok" "cron job not present"
+        SKIPPED_TOOLS+=("cron-vlt")
+        return 0
+    fi
+
+    local new_crontab
+    new_crontab=$(crontab -l 2>/dev/null | grep -vF "$VLT_CRON_MARKER" || true)
+    if [[ -n "$new_crontab" ]]; then
+        echo "$new_crontab" | crontab -
+    else
+        crontab -r 2>/dev/null || true
+    fi
+
+    if ! crontab -l 2>/dev/null | grep -qF "$VLT_CRON_MARKER"; then
+        emit_config_status "vlt cron" "vlt-cron" "removed" "daily cron job"
+        UPDATED_TOOLS+=("cron-vlt")
+    else
+        emit_config_status "vlt cron" "vlt-cron" "FAIL" "could not remove cron job"
+        FAILED_TOOLS+=("cron-vlt")
+    fi
+}
+
 remove_npm() {
     local npmrc="$HOME/.npmrc"
     local current
 
-    if ! grep -q '^min-release-age=' "$npmrc" 2>/dev/null; then
+    if ! grep -q '^min-release-age=' "$npmrc" 2>/dev/null \
+        && ! grep -q '^min-release-age-exclude' "$npmrc" 2>/dev/null; then
         emit_config_status "npm" "npm" "ok" "min-release-age not present"
         SKIPPED_TOOLS+=("npm")
         return 0
     fi
 
-    current=$(grep '^min-release-age=' "$npmrc" | head -1 | sed 's/.*=//')
+    current=$(grep '^min-release-age=' "$npmrc" 2>/dev/null | head -1 | sed 's/.*=//' || true)
 
     backup_if_exists "$npmrc"
     remove_matching_lines "$npmrc" '^min-release-age='
+    remove_matching_lines "$npmrc" '^min-release-age-exclude'
 
     strip_file_if_whitespace_only "$npmrc"
     if verify_and_finalize "$npmrc" "npm" 'min-release-age'; then
-        emit_config_status "npm" "npm" "removed" "min-release-age=$current"
+        emit_config_status "npm" "npm" "removed" "min-release-age=${current:-unset}"
     else
-        emit_config_status "npm" "npm" "FAIL" "min-release-age=$current"
+        emit_config_status "npm" "npm" "FAIL" "min-release-age=${current:-unset}"
     fi
     cleanup_empty_file "$npmrc"
 }
 
 remove_pnpm() {
-    if ! grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null \
-        && ! grep -q '^minimum-release-age-exclude\[\]=' "$PNPM_RC_PATH" 2>/dev/null; then
+    local pnpm_config
+    pnpm_config=$(pnpm_active_config_path)
+
+    if ! grep -q '^minimumReleaseAge:' "$pnpm_config" 2>/dev/null \
+        && ! grep -q '^minimumReleaseAgeExclude:' "$pnpm_config" 2>/dev/null \
+        && ! grep -q '^minimum-release-age=' "$pnpm_config" 2>/dev/null \
+        && ! grep -q '^minimum-release-age-exclude' "$pnpm_config" 2>/dev/null; then
         emit_config_status "pnpm" "pnpm" "ok" "minimum-release-age settings not present"
         SKIPPED_TOOLS+=("pnpm")
         return 0
     fi
 
-    backup_if_exists "$PNPM_RC_PATH"
-    remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age='
-    remove_matching_lines "$PNPM_RC_PATH" '^minimum-release-age-exclude\\[\\]='
+    backup_if_exists "$pnpm_config"
+    remove_yaml_top_level_key "$pnpm_config" "minimumReleaseAge"
+    remove_yaml_top_level_key "$pnpm_config" "minimumReleaseAgeExclude"
+    remove_matching_lines "$pnpm_config" '^minimum-release-age='
+    remove_matching_lines "$pnpm_config" '^minimum-release-age-exclude'
 
-    strip_file_if_whitespace_only "$PNPM_RC_PATH"
-    if verify_and_finalize "$PNPM_RC_PATH" "pnpm" 'minimum-release-age'; then
-        emit_config_status "pnpm" "pnpm" "removed" "minimum-release-age settings"
+    strip_file_if_whitespace_only "$pnpm_config"
+    if verify_and_finalize "$pnpm_config" "pnpm" 'minimumReleaseAge\|minimum-release-age'; then
+        emit_config_status "pnpm" "pnpm" "removed" "minimum-release-age settings ($(pnpm_active_config_label))"
     else
         emit_config_status "pnpm" "pnpm" "FAIL" "minimum-release-age settings"
     fi
-    cleanup_empty_file "$PNPM_RC_PATH"
+    cleanup_empty_file "$pnpm_config"
 }
 
 remove_bun() {
@@ -1797,6 +2841,27 @@ remove_bun() {
         emit_config_status "bun" "bun" "FAIL" "minimumReleaseAge settings"
     fi
     cleanup_empty_file "$bunfig"
+}
+
+remove_deno() {
+    local deno_config="$DENO_CONFIG_PATH"
+
+    if ! grep -q '^[[:space:]]*"minimumDependencyAge"[[:space:]]*:' "$deno_config" 2>/dev/null; then
+        emit_config_status "deno" "deno" "ok" "minimumDependencyAge not present"
+        SKIPPED_TOOLS+=("deno")
+        return 0
+    fi
+
+    backup_if_exists "$deno_config"
+    remove_deno_minimum_dependency_age_config "$deno_config"
+
+    strip_file_if_whitespace_only "$deno_config"
+    if verify_deno_and_finalize "$deno_config"; then
+        emit_config_status "deno" "deno" "removed" "minimumDependencyAge"
+    else
+        emit_config_status "deno" "deno" "FAIL" "minimumDependencyAge"
+    fi
+    cleanup_empty_file "$deno_config"
 }
 
 remove_yarn_classic() {
@@ -1908,27 +2973,104 @@ remove_pixi() {
         "$(pixi_source_line)"
 }
 
+remove_vlt() {
+    local current detail
+
+    if ! grep -q '^[[:space:]]*"before"[[:space:]]*:' "$VLT_CONFIG_PATH" 2>/dev/null; then
+        emit_config_status "vlt" "vlt" "ok" "before setting not present"
+        SKIPPED_TOOLS+=("vlt")
+        return 0
+    fi
+
+    current=$(grep '^[[:space:]]*"before"[[:space:]]*:' "$VLT_CONFIG_PATH" | head -1 | sed 's/.*: *"//; s/".*//')
+    detail="before = ${current}"
+
+    backup_if_exists "$VLT_CONFIG_PATH"
+    remove_vlt_before_config "$VLT_CONFIG_PATH"
+
+    strip_file_if_whitespace_only "$VLT_CONFIG_PATH"
+    if verify_and_finalize "$VLT_CONFIG_PATH" "vlt" '"before"\|"config"\|^[{}][,]*$'; then
+        emit_config_status "vlt" "vlt" "removed" "$detail"
+    else
+        emit_config_status "vlt" "vlt" "FAIL" "$detail"
+    fi
+    cleanup_empty_file "$VLT_CONFIG_PATH"
+}
+
+remove_bundler() {
+    local bundler_conf="$BUNDLER_CONFIG_PATH"
+    local current
+
+    if ! grep -q '^BUNDLE_COOLDOWN:' "$bundler_conf" 2>/dev/null; then
+        emit_config_status "Bundler" "bundler" "ok" "cooldown not present"
+        SKIPPED_TOOLS+=("bundler")
+        return 0
+    fi
+
+    current=$(grep '^BUNDLE_COOLDOWN:' "$bundler_conf" | head -1 | sed 's/^[^:]*: *//; s/"//g')
+
+    backup_if_exists "$bundler_conf"
+    remove_yaml_top_level_key "$bundler_conf" "BUNDLE_COOLDOWN"
+
+    if verify_and_finalize "$bundler_conf" "bundler" 'BUNDLE_COOLDOWN\|---'; then
+        emit_config_status "Bundler" "bundler" "removed" "cooldown = ${current}d"
+    else
+        emit_config_status "Bundler" "bundler" "FAIL" "cooldown = ${current}d"
+    fi
+    cleanup_yaml_marker_only_file "$bundler_conf"
+}
+
 validate_configs() {
     local pip_conf="$HOME/.config/pip/pip.conf"
     local uv_conf="$HOME/.config/uv/uv.toml"
+    local poetry_conf="$POETRY_CONFIG_PATH"
     local npmrc="$HOME/.npmrc"
+    local pnpm_config
     local bunfig="$HOME/.bunfig.toml"
+    local deno_config="$DENO_CONFIG_PATH"
     local yarnrc="$HOME/.yarnrc"
     local yarnrc_yml="$HOME/.yarnrc.yml"
-    local expected_pip_line="uploaded-prior-to = $(pip_cutoff_timestamp)"
-    local expected_uv_date="exclude-newer = \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
+    local bundler_conf="$BUNDLER_CONFIG_PATH"
+    local expected_vlt_before="\"before\": \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
+    local expected_pip_line="uploaded-prior-to = $(pip_uploaded_prior_to_value)"
+    local expected_uv_date="exclude-newer = \"P${MIN_AGE_DAYS}D\""
+    local expected_poetry_age="min-release-age = ${MIN_AGE_DAYS}"
     local expected_pnpm_age="minimum-release-age=$(( MIN_AGE_DAYS * 1440 ))"
     local expected_bun_age="minimumReleaseAge = $(( MIN_AGE_DAYS * 86400 ))"
     local expected_yarn_v1_age="cache-min $(( MIN_AGE_DAYS * 86400 ))"
     local expected_yarn_v2_age="npmMinimalAgeGate: $(yaml_quote "${MIN_AGE_DAYS}d")"
+    local expected_bundler_age="BUNDLE_COOLDOWN: \"${MIN_AGE_DAYS}\""
     local expected_uv_exceptions=""
+    local expected_poetry_exceptions=""
+    local expected_poetry_source_exceptions=""
+    local expected_npm_exceptions=""
     local expected_bun_exceptions=""
     local expected_yarn_exceptions=""
     local expected_pnpm_exceptions=""
-    local current_exceptions item
+    local current_exceptions current_source_exceptions item
+
+    pnpm_config=$(pnpm_active_config_path)
+
+    if pnpm_active_config_is_yaml; then
+        expected_pnpm_age="minimumReleaseAge: $(( MIN_AGE_DAYS * 1440 ))"
+    fi
 
     if [[ ${#UV_EXCEPTIONS[@]} -gt 0 ]]; then
         expected_uv_exceptions=$(build_uv_exception_line)
+    fi
+    if [[ ${#POETRY_EXCEPTIONS[@]} -gt 0 ]]; then
+        expected_poetry_exceptions="min-release-age-exclude = $(toml_quote "$(comma_join "${POETRY_EXCEPTIONS[@]}")")"
+    fi
+    if [[ ${#POETRY_SOURCE_EXCEPTIONS[@]} -gt 0 ]]; then
+        expected_poetry_source_exceptions="min-release-age-exclude-source = $(toml_quote "$(comma_join "${POETRY_SOURCE_EXCEPTIONS[@]}")")"
+    fi
+    if [[ ${#NPM_EXCEPTIONS[@]} -gt 0 ]]; then
+        for item in "${NPM_EXCEPTIONS[@]}"; do
+            expected_npm_exceptions+=$'min-release-age-exclude[]='
+            expected_npm_exceptions+="$item"
+            expected_npm_exceptions+=$'\n'
+        done
+        expected_npm_exceptions=${expected_npm_exceptions%$'\n'}
     fi
     if [[ ${#BUN_EXCEPTIONS[@]} -gt 0 ]]; then
         expected_bun_exceptions="minimumReleaseAgeExcludes = $(toml_array "${BUN_EXCEPTIONS[@]}")"
@@ -1937,12 +3079,16 @@ validate_configs() {
         expected_yarn_exceptions="npmPreapprovedPackages: $(yaml_flow_array "${YARN_EXCEPTIONS[@]}")"
     fi
     if [[ ${#PNPM_EXCEPTIONS[@]} -gt 0 ]]; then
-        for item in "${PNPM_EXCEPTIONS[@]}"; do
-            expected_pnpm_exceptions+=$'minimum-release-age-exclude[]='
-            expected_pnpm_exceptions+="$item"
-            expected_pnpm_exceptions+=$'\n'
-        done
-        expected_pnpm_exceptions=${expected_pnpm_exceptions%$'\n'}
+        if pnpm_active_config_is_yaml; then
+            expected_pnpm_exceptions="minimumReleaseAgeExclude: $(yaml_flow_array "${PNPM_EXCEPTIONS[@]}")"
+        else
+            for item in "${PNPM_EXCEPTIONS[@]}"; do
+                expected_pnpm_exceptions+=$'minimum-release-age-exclude[]='
+                expected_pnpm_exceptions+="$item"
+                expected_pnpm_exceptions+=$'\n'
+            done
+            expected_pnpm_exceptions=${expected_pnpm_exceptions%$'\n'}
+        fi
     fi
 
     if [[ -f "$pip_conf" ]]; then
@@ -1968,19 +3114,41 @@ validate_configs() {
         record_validation_skip "uv" "config not present" "uv"
     fi
 
+    if [[ -f "$poetry_conf" ]]; then
+        current_exceptions=$(current_lines_or_empty "$poetry_conf" '^min-release-age-exclude[[:space:]]*=')
+        current_source_exceptions=$(current_lines_or_empty "$poetry_conf" '^min-release-age-exclude-source[[:space:]]*=')
+        if grep -Fqx "$expected_poetry_age" "$poetry_conf" 2>/dev/null \
+            && [[ "$current_exceptions" == "$expected_poetry_exceptions" ]] \
+            && [[ "$current_source_exceptions" == "$expected_poetry_source_exceptions" ]]; then
+            record_validation_ok "Poetry" "min-release-age settings match" "poetry"
+        else
+            record_validation_fail "Poetry" "min-release-age settings do not match" "poetry"
+        fi
+    else
+        record_validation_skip "Poetry" "config not present" "poetry"
+    fi
+
     if [[ -f "$npmrc" ]]; then
-        if grep -Fqx "min-release-age=${MIN_AGE_DAYS}" "$npmrc" 2>/dev/null; then
+        current_exceptions=$(current_lines_or_empty "$npmrc" '^min-release-age-exclude')
+        if grep -Fqx "min-release-age=${MIN_AGE_DAYS}" "$npmrc" 2>/dev/null \
+            && [[ "$current_exceptions" == "$expected_npm_exceptions" ]]; then
             record_validation_ok "npm" "min-release-age=${MIN_AGE_DAYS}" "npm"
         else
-            record_validation_fail "npm" "expected min-release-age=${MIN_AGE_DAYS}" "npm"
+            record_validation_fail "npm" "min-release-age settings do not match" "npm"
         fi
     else
         record_validation_skip "npm" "config not present" "npm"
     fi
 
-    if [[ -f "$PNPM_RC_PATH" ]]; then
-        current_exceptions=$(current_lines_or_empty "$PNPM_RC_PATH" '^minimum-release-age-exclude\[\]=')
-        if grep -Fqx "$expected_pnpm_age" "$PNPM_RC_PATH" 2>/dev/null \
+    if [[ -f "$PNPM_RC_PATH" && "$pnpm_config" != "$PNPM_RC_PATH" ]] \
+        && { grep -q '^minimum-release-age=' "$PNPM_RC_PATH" 2>/dev/null || grep -q '^minimum-release-age-exclude' "$PNPM_RC_PATH" 2>/dev/null; }; then
+        record_validation_fail "pnpm" "legacy rc still has minimum-release-age settings" "pnpm"
+    elif [[ -f "$pnpm_config" ]]; then
+        current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimumReleaseAgeExclude:')
+        if [[ -z "$current_exceptions" ]]; then
+            current_exceptions=$(current_lines_or_empty "$pnpm_config" '^minimum-release-age-exclude')
+        fi
+        if grep -Fqx "$expected_pnpm_age" "$pnpm_config" 2>/dev/null \
             && [[ "$current_exceptions" == "$expected_pnpm_exceptions" ]]; then
             record_validation_ok "pnpm" "$expected_pnpm_age" "pnpm"
         else
@@ -2033,6 +3201,26 @@ validate_configs() {
         "$HOME/.config/set-package-min-age/pixi.sh" \
         "$(pixi_source_line)" \
         "--exclude-newer \"${MIN_AGE_DAYS}d\""
+
+    if [[ -f "$VLT_CONFIG_PATH" ]]; then
+        if grep -Fq "$expected_vlt_before" "$VLT_CONFIG_PATH" 2>/dev/null; then
+            record_validation_ok "vlt" "before matches" "vlt"
+        else
+            record_validation_fail "vlt" "before setting does not match" "vlt"
+        fi
+    else
+        record_validation_skip "vlt" "config not present" "vlt"
+    fi
+
+    if [[ -f "$bundler_conf" ]]; then
+        if grep -Fqx "$expected_bundler_age" "$bundler_conf" 2>/dev/null; then
+            record_validation_ok "Bundler" "cooldown matches" "bundler"
+        else
+            record_validation_fail "Bundler" "cooldown setting does not match" "bundler"
+        fi
+    else
+        record_validation_skip "Bundler" "config not present" "bundler"
+    fi
 }
 
 validate_wrapper_tool() {
@@ -2076,6 +3264,11 @@ validate_wrapper_tool() {
 main() {
     parse_args "$@"
 
+    if [[ "${SET_MINIMUM_PACKAGE_RELEASE_AGE_REFRESH_VLT:-}" == "1" ]]; then
+        setup_vlt
+        return
+    fi
+
     NORMAL_MODE_REPORTING=false
     RESULT_TOOL_KEYS=()
     RESULT_CONFIG_STATUSES=()
@@ -2099,7 +3292,7 @@ main() {
         printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
         print_separator
 
-        run_remove_tools pip uv uv-cron npm pnpm bun yarn-classic yarn-berry deno pixi
+        run_remove_tools pip uv uv-cron poetry npm pnpm bun deno pixi yarn-classic yarn-berry vlt vlt-cron bundler
 
         echo ""
         echo "  Summary"
@@ -2165,7 +3358,8 @@ main() {
 
     setup_pip
     setup_uv
-    setup_cron_uv
+    remove_cron_uv
+    setup_poetry
     setup_npm
     setup_pnpm
     setup_bun
@@ -2173,6 +3367,9 @@ main() {
     setup_yarn_berry
     setup_deno
     setup_pixi
+    setup_vlt
+    setup_cron_vlt
+    setup_bundler
 
     validate_configs
     print_results_table
