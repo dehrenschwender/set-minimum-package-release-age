@@ -17,6 +17,10 @@ test_macos_wrapper() {
     assert_contains "$output" "set-minimum-package-release-age (macOS)"
     assert_file_contains "$HOME/Library/Preferences/pnpm/rc" "minimum-release-age=8640"
     assert_file_contains "$HOME/.yarnrc.yml" "npmPreapprovedPackages: ['@myorg/*']"
+    assert_file_contains "$HOME/.config/set-package-min-age/deno.sh" "--minimum-dependency-age=P6D"
+    assert_file_contains "$HOME/.config/set-package-min-age/pixi.sh" '--exclude-newer "6d"'
+    assert_file_contains "$HOME/.zshrc" "set-package-min-age/deno.sh"
+    assert_file_contains "$HOME/.bashrc" "set-package-min-age/pixi.sh"
     cleanup_test_env
 }
 
