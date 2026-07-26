@@ -80,6 +80,14 @@ If dependencies are added later:
 
 Recorded package changes: none recorded.
 
+2026-07-07: Bundler preflight now treats installed Bundler versions below `4.0.13` or with unknown detected versions as non-fatal warnings. The script still writes and validates `BUNDLE_COOLDOWN` for future Bundler upgrades, while documenting that cooldown enforcement only works on Bundler `4.0.13+`.
+
+Recorded package changes: none recorded.
+
+2026-07-07: Normal runs now stream a `Progress` table after tool readiness. Each managed config step prints a `start` row and then its live result, validation prints live per-tool results, and the final merged `Results` table is still emitted for summary.
+
+Recorded package changes: none recorded.
+
 ## Agent Instructions
 
 - Always preserve unrelated user changes.
@@ -93,6 +101,8 @@ Recorded package changes: none recorded.
 - Config changes must continue to be verified against backups, with rollback on unexpected diffs.
 - Validation should remain aligned with the exact config lines the scripts manage, including exception entries where supported.
 - Yarn Classic should remain documented as a workaround, not true publish-age enforcement.
+- Bundler cooldown should remain documented as requiring Bundler `4.0.13+`; unsupported installed Bundler versions should warn rather than block other package-manager configuration.
+- Normal runs should continue to stream progress after readiness so users are not left waiting silently before final results.
 - If a behavior exists in the shared core, test it there instead of duplicating logic in both wrappers.
 
 ## Validation
