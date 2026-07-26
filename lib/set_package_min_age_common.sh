@@ -1749,13 +1749,11 @@ run_preflight_checks() {
     path=$(lookup_detected_tool_field "Bundler" path)
     if [[ "$installed" == "yes" ]]; then
         if [[ -z "$version" || "$version" == "unknown" ]]; then
-            record_preflight_fail "Bundler" "$installed" "$version" "$path" "cooldown requires version detection; installed version could not be determined" "bundler"
-            status=1
+            record_preflight_skip "Bundler" "$installed" "$version" "$path" "cooldown skipped; installed version could not be determined"
         elif version_gte "$version" "4.0.15"; then
             record_preflight_ok "Bundler" "$installed" "$version" "$path" "cooldown requires >= 4.0.15"
         else
-            record_preflight_fail "Bundler" "$installed" "$version" "$path" "cooldown requires >= 4.0.15" "bundler"
-            status=1
+            record_preflight_skip "Bundler" "$installed" "$version" "$path" "cooldown skipped; requires >= 4.0.15"
         fi
     else
         record_preflight_skip "Bundler" "$installed" "$version" "$path" "not installed; config can still be written"
@@ -2590,7 +2588,16 @@ setup_vlt() {
 setup_bundler() {
     local bundler_conf="$BUNDLER_CONFIG_PATH"
     local desired_line="BUNDLE_COOLDOWN: \"${MIN_AGE_DAYS}\""
-    local detail status current
+    local detail status current installed version
+
+    installed=$(lookup_detected_tool_field "Bundler" installed)
+    version=$(lookup_detected_tool_field "Bundler" version)
+    if [[ "$installed" == "yes" ]] \
+        && { [[ -z "$version" || "$version" == "unknown" ]] || ! version_gte "$version" "4.0.15"; }; then
+        emit_config_status "Bundler" "bundler" "--" "cooldown skipped; requires >= 4.0.15"
+        SKIPPED_TOOLS+=("bundler")
+        return 0
+    fi
 
     ensure_file_exists "$bundler_conf"
     if ! grep -q '[^[:space:]]' "$bundler_conf" 2>/dev/null; then
