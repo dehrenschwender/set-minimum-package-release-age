@@ -195,7 +195,7 @@ EOF
 install_fake_detection_tools() {
     local yarn_version="${1:-1.22.22}"
     local include_bun="${2:-0}"
-    local npm_version="${3:-11.10.0}"
+    local npm_version="${3:-12.0.1}"
     local pnpm_version="${4:-10.19.0}"
     local bun_version="${5:-1.3.2}"
     local uv_version="${6:-0.11.24}"
@@ -208,7 +208,9 @@ install_fake_detection_tools() {
     local poetry_version="${13:-2.4.0}"
     local include_bundler="${14:-1}"
     local bundler_version="${15:-4.0.15}"
-    local pixi_version="${16:-0.58.0}"
+    local pixi_version="${16:-0.67.0}"
+    local include_hex="${17:-1}"
+    local hex_version="${18:-2.5.1}"
 
     cat > "$TEST_BIN_DIR/pip3" <<EOF
 #!/usr/bin/env bash
@@ -318,6 +320,23 @@ EOF
         rm -f "$TEST_BIN_DIR/bundle"
     fi
 
+    if [[ "$include_hex" == "1" ]]; then
+        cat > "$TEST_BIN_DIR/mix" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "\${1:-}" == "hex.info" ]]; then
+    printf 'Hex: %s\n' "$hex_version"
+    exit 0
+fi
+
+printf 'mix test binary\n'
+EOF
+        chmod +x "$TEST_BIN_DIR/mix"
+    else
+        rm -f "$TEST_BIN_DIR/mix"
+    fi
+
     if [[ "$include_bun" == "1" ]]; then
         cat > "$TEST_BIN_DIR/bun" <<EOF
 #!/usr/bin/env bash
@@ -372,10 +391,10 @@ EOF
 
 install_fake_validation_tools() {
     local yarn_version="${1:-1.22.22}"
-    local npm_version="${2:-11.10.0}"
+    local npm_version="${2:-12.0.1}"
     local pnpm_version="${3:-10.19.0}"
     local deno_version="${4:-2.9.0}"
-    local pixi_version="${5:-0.58.0}"
+    local pixi_version="${5:-0.67.0}"
 
     install_fake_detection_tools "$yarn_version" 1 "$npm_version" "$pnpm_version" "" "" "" 1 "" 1 "$deno_version" 1 "" 1 "" "$pixi_version"
 

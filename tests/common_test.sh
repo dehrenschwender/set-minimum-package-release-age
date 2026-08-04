@@ -678,7 +678,7 @@ test_setup_deno_preserves_unrelated_rc_content() {
 
 test_preflight_deno_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "" 1 "2.5.4"
+    install_fake_detection_tools "4.12.0" 0 "12.0.1" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "" 1 "2.5.4"
     load_common_library
 
     local output status
@@ -695,7 +695,7 @@ test_preflight_deno_version_failure() {
 
 test_preflight_pixi_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "0.0.0" 1 "2.9.0" 1 "2.4.0" 1 "4.0.15" "0.46.0"
+    install_fake_detection_tools "4.12.0" 0 "12.0.1" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "0.0.0" 1 "2.9.0" 1 "2.4.0" 1 "4.0.15" "0.46.0"
     load_common_library
 
     local output status
@@ -705,7 +705,7 @@ test_preflight_pixi_version_failure() {
     set -e
 
     assert_eq 1 "$status"
-    assert_contains "$output" "exclude-newer requires >= 0.47.0"
+    assert_contains "$output" "relative exclude-newer requires >= 0.67.0"
     assert_not_exists "$HOME/.config/set-package-min-age/pixi.sh"
     cleanup_test_env
 }
@@ -756,6 +756,7 @@ test_validate_configs() {
     setup_pixi
     setup_vlt
     setup_bundler
+    setup_hex
 
     validate_configs
     assert_array_contains "pip" "${VALIDATED_TOOLS[@]-}"
@@ -770,6 +771,7 @@ test_validate_configs() {
     assert_array_contains "pixi" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "vlt" "${VALIDATED_TOOLS[@]-}"
     assert_array_contains "bundler" "${VALIDATED_TOOLS[@]-}"
+    assert_array_contains "hex" "${VALIDATED_TOOLS[@]-}"
 
     cleanup_test_env
 
@@ -793,7 +795,7 @@ test_print_tool_overview_yarn_v1() {
     assert_contains "$output" "pip              yes        26.1"
     assert_contains "$output" "$TEST_BIN_DIR/pip3"
     assert_contains "$output" "Poetry           yes        2.4.0"
-    assert_contains "$output" "npm              yes        11.10.0"
+    assert_contains "$output" "npm              yes        12.0.1"
     assert_contains "$output" "bun              no         n/a          not found"
     assert_contains "$output" "deno             yes        2.8.0"
     assert_contains "$output" "vlt              yes        0.0.0"
@@ -836,9 +838,61 @@ test_preflight_npm_version_failure() {
     cleanup_test_env
 }
 
+test_preflight_npm_exception_version_failure() {
+    setup_test_env
+    install_fake_detection_tools "4.12.0" 0 "11.10.0"
+    load_common_library
+
+    local output status
+    set +e
+    output=$(main 4 --exception npm:internal-package 2>&1)
+    status=$?
+    set -e
+
+    assert_eq 1 "$status"
+    assert_contains "$output" "min-release-age-exclude requires >= 12.0.0"
+    assert_not_exists "$HOME/.npmrc"
+    cleanup_test_env
+}
+
+test_setup_remove_hex() {
+    setup_test_env
+    load_common_library
+    parse_args 7
+
+    setup_hex
+    assert_file_contains "$HEX_CONFIG_PATH" '{cooldown,<<"7d">>}.'
+
+    reset_status_arrays
+    setup_hex
+    assert_array_contains "hex" "${SKIPPED_TOOLS[@]-}"
+
+    reset_status_arrays
+    remove_hex
+    assert_not_exists "$HEX_CONFIG_PATH"
+    cleanup_test_env
+}
+
+test_preflight_hex_version_failure() {
+    setup_test_env
+    install_fake_detection_tools "4.12.0" 0 "12.0.1" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "0.0.0" 1 "2.9.0" 1 "2.4.0" 1 "4.0.15" "0.67.0" 1 "2.4.1"
+    load_common_library
+
+    local output status
+    set +e
+    output=$(main 4 2>&1)
+    status=$?
+    set -e
+
+    assert_eq 1 "$status"
+    assert_contains "$output" "cooldown requires >= 2.5.0"
+    assert_not_exists "$HEX_CONFIG_PATH"
+    cleanup_test_env
+}
+
 test_preflight_pip_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.19.0" "1.3.2" "0.11.24" "26.0"
+    install_fake_detection_tools "4.12.0" 0 "12.0.1" "10.19.0" "1.3.2" "0.11.24" "26.0"
     load_common_library
 
     local output status
@@ -855,7 +909,7 @@ test_preflight_pip_version_failure() {
 
 test_preflight_uv_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.19.0" "1.3.2" "0.9.16" "26.1"
+    install_fake_detection_tools "4.12.0" 0 "12.0.1" "10.19.0" "1.3.2" "0.9.16" "26.1"
     load_common_library
 
     local output status
@@ -872,7 +926,7 @@ test_preflight_uv_version_failure() {
 
 test_preflight_poetry_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "0.0.0" 1 "2.8.0" 1 "2.3.9"
+    install_fake_detection_tools "4.12.0" 0 "12.0.1" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "0.0.0" 1 "2.8.0" 1 "2.3.9"
     load_common_library
 
     local output status
@@ -889,7 +943,7 @@ test_preflight_poetry_version_failure() {
 
 test_preflight_pnpm_base_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.15.0"
+    install_fake_detection_tools "4.12.0" 0 "12.0.1" "10.15.0"
     load_common_library
 
     local output status
@@ -907,7 +961,7 @@ test_preflight_pnpm_base_version_failure() {
 
 test_preflight_pnpm_pattern_exception_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.16.5"
+    install_fake_detection_tools "4.12.0" 0 "12.0.1" "10.16.5"
     load_common_library
 
     local output status
@@ -923,7 +977,7 @@ test_preflight_pnpm_pattern_exception_version_failure() {
 
 test_preflight_pnpm_version_selector_failure() {
     setup_test_env
-    install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.18.0"
+    install_fake_detection_tools "4.12.0" 0 "12.0.1" "10.18.0"
     load_common_library
 
     local output status
@@ -939,7 +993,7 @@ test_preflight_pnpm_version_selector_failure() {
 
 test_preflight_bun_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.12.0" 1 "11.10.0" "10.19.0" "1.2.9"
+    install_fake_detection_tools "4.12.0" 1 "12.0.1" "10.19.0" "1.2.9"
     load_common_library
 
     local output status
@@ -956,7 +1010,7 @@ test_preflight_bun_version_failure() {
 
 test_preflight_deno_config_version_failure_unused() {
     setup_test_env
-    install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "0.0.0" 1 "2.5.9"
+    install_fake_detection_tools "4.12.0" 0 "12.0.1" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "0.0.0" 1 "2.5.9"
     load_common_library
 
     local output status
@@ -973,7 +1027,7 @@ test_preflight_deno_config_version_failure_unused() {
 
 test_preflight_bundler_version_warning() {
     setup_test_env
-    install_fake_detection_tools "4.12.0" 0 "11.10.0" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "0.0.0" 1 "2.8.0" 1 "2.4.0" 1 "4.0.12"
+    install_fake_detection_tools "4.12.0" 0 "12.0.1" "10.19.0" "1.3.2" "0.11.24" "26.1" 1 "0.0.0" 1 "2.8.0" 1 "2.4.0" 1 "4.0.12"
     install_fake_crontab
     load_common_library
 
@@ -1262,6 +1316,9 @@ run_test "validate_configs" test_validate_configs || true
 run_test "print_tool_overview_yarn_v1" test_print_tool_overview_yarn_v1 || true
 run_test "print_tool_overview_yarn_berry" test_print_tool_overview_yarn_berry || true
 run_test "preflight_npm_version_failure" test_preflight_npm_version_failure || true
+run_test "preflight_npm_exception_version_failure" test_preflight_npm_exception_version_failure || true
+run_test "setup_remove_hex" test_setup_remove_hex || true
+run_test "preflight_hex_version_failure" test_preflight_hex_version_failure || true
 run_test "preflight_pip_version_failure" test_preflight_pip_version_failure || true
 run_test "preflight_uv_version_failure" test_preflight_uv_version_failure || true
 run_test "preflight_poetry_version_failure" test_preflight_poetry_version_failure || true

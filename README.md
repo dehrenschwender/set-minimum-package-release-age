@@ -1,6 +1,6 @@
 # Set Minimum Package Release Age
 
-Bash scripts that configure a minimum package release age across Python, JavaScript, and Ruby package managers. The default is 7 days, configurable via CLI argument. This helps reduce supply-chain risk by preferring package versions that have been published long enough to be noticed and pulled if they are malicious.
+Bash scripts that configure a minimum package release age across Python, JavaScript, Ruby, and Elixir/Erlang package managers. The default is 7 days, configurable via CLI argument. This helps reduce supply-chain risk by preferring package versions that have been published long enough to be noticed and pulled if they are malicious.
 
 The repo now uses a shared core library plus thin platform wrappers:
 
@@ -24,6 +24,7 @@ The repo now uses a shared core library plus thin platform wrappers:
 | JavaScript / Multi | `deno` | shell wrapper injecting `--minimum-dependency-age` (no user-level config exists) | `~/.config/set-package-min-age/deno.sh` (sourced from `~/.zshrc` and `~/.bashrc`) |
 | JavaScript | `vlt` | native before-date gate | `~/.config/vlt/vlt.json` (Linux) / `~/Library/Preferences/vlt/vlt.json` (macOS) |
 | Ruby | `Bundler` | native cooldown | `~/.bundle/config` |
+| Elixir / Erlang | `Hex` | native cooldown | `~/.hex/hex.config` (or the `HEX_HOME` / `MIX_XDG` location) |
 
 ## Feature Matrix
 
@@ -38,16 +39,17 @@ The repo now uses a shared core library plus thin platform wrappers:
 | `yarn classic (v1)` | no | no | `cache-min` TTL workaround | yes | no |
 | `yarn berry (v2+)` | yes | yes | no | yes | yes |
 | `deno` | yes (CLI flag) | no (project config only) | shell wrapper around `--minimum-dependency-age` | yes | yes (>= 2.6.0) |
-| `pixi` | yes (CLI/project config) | no | shell wrapper around `--exclude-newer` | yes | yes (>= 0.47.0) |
+| `pixi` | yes (CLI/project config) | no | shell wrapper around `--exclude-newer` | yes | yes (>= 0.67.0) |
 | `vlt` | yes | no | no | yes | no documented minimum |
 | `Bundler` | yes | no | no | yes | warning |
+| `Hex` | yes | no (repository exclusions only) | no | yes | yes |
 
 ## Version Notes
 
 - `pip` relative upload-time gating requires pip `26.1+` and is written as `uploaded-prior-to = P7D` under `[install]`.
 - `uv` relative `exclude-newer` durations require uv `0.9.17+`.
 - `Poetry` `solver.min-release-age`, package excludes, and source excludes require Poetry `2.4.0+`.
-- `npm` `min-release-age` and `min-release-age-exclude[]` require npm `11.10.0+`.
+- `npm` `min-release-age` requires npm `11.10.0+`; `min-release-age-exclude[]` requires npm `12.0.0+`.
 - `pnpm` `minimumReleaseAge` requires pnpm `10.16.0+`.
 - `pnpm` exclusion patterns require pnpm `10.17.0+`.
 - `pnpm` version-selector exclusions require pnpm `10.19.0+`.
@@ -58,7 +60,8 @@ The repo now uses a shared core library plus thin platform wrappers:
 - `Bundler` `cooldown` requires Bundler `4.0.13+`; older or unknown installed Bundler versions warn but do not stop the script, and the config is still written for use after Bundler is upgraded.
 - Yarn Classic only supports `cache-min`, which is a cache freshness workaround rather than native publish-date filtering.
 - Deno `minimumDependencyAge` and `--minimum-dependency-age` require Deno `2.6.0+`. Deno `2.8+` can also read `min-release-age` from `.npmrc`, and Deno `2.9+` defaults to a 24-hour gate. This repo keeps a shell wrapper so its requested age works independently of npm configuration and project files.
-- Pixi `exclude-newer` requires Pixi `0.47.0+`. Pixi exposes it through project configuration and CLI flags but not user-level configuration, so this repo installs a shell wrapper for `pixi install`, `pixi add`, `pixi update`, and `pixi upgrade`.
+- Pixi `exclude-newer` timestamps require Pixi `0.47.0+`; relative durations such as the wrapper's `7d` require Pixi `0.67.0+`. Pixi exposes it through project configuration and CLI flags but not user-level configuration, so this repo installs a shell wrapper for `pixi install`, `pixi add`, `pixi update`, and `pixi upgrade`.
+- Hex `cooldown` requires Hex `2.5.0+`. It applies during fresh dependency resolution, not when installing an unchanged lockfile; repository-wide exceptions are available through `cooldown_exclude_repos`.
 
 ## Usage
 
@@ -121,6 +124,7 @@ Unsupported exception targets:
 - `vlt`
 - `yarn-classic`
 - `bundler`
+- `hex`
 
 Examples:
 
@@ -152,6 +156,7 @@ Use repeatable `--remove-tool` flags to remove settings for only selected manage
 - `vlt`
 - `vlt-cron`
 - `bundler`
+- `hex`
 
 Examples:
 
@@ -187,6 +192,8 @@ For each supported tool, the script:
 `vlt` is written with an absolute `before` timestamp under `config`, so the scripts also manage a daily cron job that reruns the wrapper in a refresh mode for the VLT config only.
 
 `Bundler` is written as a global `BUNDLE_COOLDOWN` value in `~/.bundle/config`.
+
+`Hex` is written as a global `cooldown` term in Hex's `hex.config`, respecting `HEX_HOME` and `MIX_XDG` config locations.
 
 `deno` and `pixi` are managed as shell wrappers under `~/.config/set-package-min-age/`, sourced by both `~/.zshrc` and `~/.bashrc`. The wrappers shadow the `deno` / `pixi` commands and inject the corresponding `--minimum-dependency-age` / `--exclude-newer` flag for the relevant install/update subcommands. Other subcommands fall through to the real binary unchanged.
 
