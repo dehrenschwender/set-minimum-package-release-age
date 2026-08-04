@@ -1072,7 +1072,7 @@ test_preflight_bundler_version_warning() {
 
 test_preflight_yarn_berry_version_failure() {
     setup_test_env
-    install_fake_detection_tools "4.11.9"
+    install_fake_detection_tools "4.9.9"
     load_common_library
 
     local output status
@@ -1082,7 +1082,7 @@ test_preflight_yarn_berry_version_failure() {
     set -e
 
     assert_eq 1 "$status"
-    assert_contains "$output" "npmMinimalAgeGate requires >= 4.12.0"
+    assert_contains "$output" "npmMinimalAgeGate requires >= 4.10.0"
     assert_not_exists "$HOME/.yarnrc.yml"
     cleanup_test_env
 }

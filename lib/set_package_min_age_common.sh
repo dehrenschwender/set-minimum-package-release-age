@@ -1893,10 +1893,10 @@ run_preflight_checks() {
         if [[ -z "$version" || "$version" == "unknown" ]]; then
             record_preflight_fail "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires version detection; installed version could not be determined" "yarn-berry"
             status=1
-        elif version_gte "$version" "4.12.0"; then
-            record_preflight_ok "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.12.0"
+        elif version_gte "$version" "4.10.0"; then
+            record_preflight_ok "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.10.0"
         else
-            record_preflight_fail "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.12.0" "yarn-berry"
+            record_preflight_fail "yarn v2+" "$installed" "$version" "$path" "npmMinimalAgeGate requires >= 4.10.0" "yarn-berry"
             status=1
         fi
     else
