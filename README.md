@@ -54,7 +54,7 @@ The repo now uses a shared core library plus thin platform wrappers:
 - `pnpm` exclusion patterns require pnpm `10.17.0+`.
 - `pnpm` version-selector exclusions require pnpm `10.19.0+`.
 - pnpm `11.0.0+` global settings are written to `config.yaml` using YAML keys; older pnpm releases keep using the legacy platform `rc` path.
-- Yarn Berry `npmMinimalAgeGate` and `npmPreapprovedPackages` require Yarn `4.12.0+` for the current documented age gate behavior.
+- Yarn Berry `npmMinimalAgeGate` and `npmPreapprovedPackages` were introduced in Yarn `4.10.0` (npm/yarnpkg/berry#6901), so the script gates on `4.10.0+`. Yarn `4.15.0+` enables the gate by default (`1d`), and per-`npmScope` overrides of `npmMinimalAgeGate` require Yarn `4.17.0+`; those defaults do not change the `npmMinimalAgeGate: "7d"` value this repo writes.
 - `bun` `minimumReleaseAge` / `minimumReleaseAgeExcludes` require Bun `1.3.0+`.
 - `vlt` uses `before`; the current implementation supports the config, but this repo does not pin an official minimum introducing version.
 - `Bundler` `cooldown` requires Bundler `4.0.13+`; older or unknown installed Bundler versions warn but do not stop the script, and the config is still written for use after Bundler is upgraded.
