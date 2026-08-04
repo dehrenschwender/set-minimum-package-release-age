@@ -10,6 +10,7 @@ VLT_CONFIG_PATH="${VLT_CONFIG_PATH:-$HOME/.config/vlt/vlt.json}"
 DENO_CONFIG_PATH="${DENO_CONFIG_PATH:-$HOME/deno.json}"
 POETRY_CONFIG_PATH="${POETRY_CONFIG_PATH:-$HOME/.config/pypoetry/config.toml}"
 BUNDLER_CONFIG_PATH="${BUNDLER_CONFIG_PATH:-$HOME/.bundle/config}"
+TOOL_VERSION_TIMEOUT_SECONDS="${TOOL_VERSION_TIMEOUT_SECONDS:-5}"
 if [[ -z "${HEX_CONFIG_PATH:-}" ]]; then
     if [[ -n "${HEX_HOME:-}" ]]; then
         HEX_CONFIG_PATH="$HEX_HOME/hex.config"
@@ -531,21 +532,72 @@ detect_command_version() {
 
     case "$tool" in
         uv)
-            raw_version=$("$path" --version 2>/dev/null || "$path" self version 2>/dev/null || true)
+            raw_version=$(run_command_with_timeout "$path" --version || run_command_with_timeout "$path" self version || true)
             ;;
         *)
-            raw_version=$("$path" --version 2>/dev/null || true)
+            raw_version=$(run_command_with_timeout "$path" --version || true)
             ;;
     esac
 
     extract_semver "$raw_version" || true
 }
 
+run_command_with_timeout() {
+    local output_file status_file pid_file wrapper_pid command_pid status timed_out=false grace_attempt timeout_tick=0
+    local timeout_ticks=$((TOOL_VERSION_TIMEOUT_SECONDS * 200))
+
+    output_file=$(mktemp "${TMPDIR:-/tmp}/set-package-min-age.XXXXXX")
+    status_file=$(mktemp "${TMPDIR:-/tmp}/set-package-min-age-status.XXXXXX")
+    pid_file=$(mktemp "${TMPDIR:-/tmp}/set-package-min-age-pid.XXXXXX")
+    (
+        "$@" >"$output_file" 2>/dev/null &
+        command_pid=$!
+        printf '%s\n' "$command_pid" >"$pid_file"
+        if wait "$command_pid"; then
+            printf '0\n' >"$status_file"
+        else
+            printf '%s\n' "$?" >"$status_file"
+        fi
+    ) 2>/dev/null &
+    wrapper_pid=$!
+
+    while [[ ! -s "$status_file" ]]; do
+        if ((timeout_tick >= timeout_ticks)); then
+            timed_out=true
+            command_pid=$(cat "$pid_file" 2>/dev/null || true)
+            if [[ "$command_pid" =~ ^[0-9]+$ ]]; then
+                kill -TERM "$command_pid" 2>/dev/null || true
+            fi
+            for ((grace_attempt = 0; grace_attempt < 10; grace_attempt++)); do
+                [[ -n "$command_pid" ]] && kill -0 "$command_pid" 2>/dev/null || break
+                sleep 0.05
+            done
+            if [[ -n "$command_pid" ]]; then
+                kill -KILL "$command_pid" 2>/dev/null || true
+            fi
+            kill -TERM "$wrapper_pid" 2>/dev/null || true
+            break
+        fi
+        sleep 0.005
+        timeout_tick=$((timeout_tick + 1))
+    done
+
+    wait "$wrapper_pid" 2>/dev/null || true
+    if [[ "$timed_out" == true ]]; then
+        status=124
+    else
+        status=$(cat "$status_file")
+    fi
+    cat "$output_file"
+    rm -f "$output_file" "$status_file" "$pid_file"
+    return "$status"
+}
+
 detect_hex_version() {
     local mix_path="$1"
     local raw_version=""
 
-    raw_version=$("$mix_path" hex.info 2>/dev/null) || return 1
+    raw_version=$(run_command_with_timeout "$mix_path" hex.info) || return 1
     if [[ "$raw_version" =~ Hex:[[:space:]]*([0-9]+(\.[0-9]+)+) ]]; then
         printf '%s\n' "${BASH_REMATCH[1]}"
         return 0

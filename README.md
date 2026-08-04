@@ -178,7 +178,7 @@ For each supported tool, the script:
 2. Backs up the existing config before modifying it.
 3. Adds or updates the age-gate setting using the unit each tool expects.
 4. Adds native exception settings where that package manager supports them.
-5. Runs a preflight version check for installed tools whose native age-gate features have documented minimum versions. Unsupported installed versions are fatal except Bundler, where older system installs warn while the managed config is still written.
+5. Runs a preflight version check for installed tools whose native age-gate features have documented minimum versions. Version probes time out after 5 seconds so a broken manager cannot block the readiness table indefinitely. Unsupported installed versions are fatal except Bundler, where older system installs warn while the managed config is still written.
 6. Validates every supported tool by checking the config written for that tool.
 7. Diffs the modified file against the backup and rolls back unexpected changes.
 8. Prints tool readiness with detected binary paths, streams live progress while applying and validating settings, then prints a merged results table covering both config changes and validation status.

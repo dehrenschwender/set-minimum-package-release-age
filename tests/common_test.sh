@@ -819,6 +819,32 @@ test_print_tool_overview_yarn_berry() {
     cleanup_test_env
 }
 
+test_tool_detection_times_out_hanging_version_probe() {
+    setup_test_env
+    install_fake_detection_tools "4.12.0"
+    cat > "$TEST_BIN_DIR/yarn" <<'EOF'
+#!/usr/bin/env bash
+while :; do
+    :
+done
+EOF
+    chmod +x "$TEST_BIN_DIR/yarn"
+    TOOL_VERSION_TIMEOUT_SECONDS=1
+    load_common_library
+
+    local output started elapsed
+    started=$SECONDS
+    output=$(detect_supported_tool_installations)
+    elapsed=$((SECONDS - started))
+
+    assert_contains "$output" "yarn v1|no|$TEST_BIN_DIR/yarn|unknown"
+    assert_contains "$output" "yarn v2+|no|$TEST_BIN_DIR/yarn|unknown"
+    if [[ "$elapsed" -gt 3 ]]; then
+        fail "hanging version probe took ${elapsed}s"
+    fi
+    cleanup_test_env
+}
+
 test_preflight_npm_version_failure() {
     setup_test_env
     install_fake_detection_tools "4.12.0" 0 "11.9.0"
@@ -1315,6 +1341,7 @@ run_test "preflight_pixi_version_failure" test_preflight_pixi_version_failure ||
 run_test "validate_configs" test_validate_configs || true
 run_test "print_tool_overview_yarn_v1" test_print_tool_overview_yarn_v1 || true
 run_test "print_tool_overview_yarn_berry" test_print_tool_overview_yarn_berry || true
+run_test "tool_detection_times_out_hanging_version_probe" test_tool_detection_times_out_hanging_version_probe || true
 run_test "preflight_npm_version_failure" test_preflight_npm_version_failure || true
 run_test "preflight_npm_exception_version_failure" test_preflight_npm_exception_version_failure || true
 run_test "setup_remove_hex" test_setup_remove_hex || true
