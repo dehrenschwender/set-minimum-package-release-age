@@ -10,6 +10,15 @@ VLT_CONFIG_PATH="${VLT_CONFIG_PATH:-$HOME/.config/vlt/vlt.json}"
 DENO_CONFIG_PATH="${DENO_CONFIG_PATH:-$HOME/deno.json}"
 POETRY_CONFIG_PATH="${POETRY_CONFIG_PATH:-$HOME/.config/pypoetry/config.toml}"
 BUNDLER_CONFIG_PATH="${BUNDLER_CONFIG_PATH:-$HOME/.bundle/config}"
+if [[ -z "${HEX_CONFIG_PATH:-}" ]]; then
+    if [[ -n "${HEX_HOME:-}" ]]; then
+        HEX_CONFIG_PATH="$HEX_HOME/hex.config"
+    elif [[ "${MIX_XDG:-}" == "1" || "${MIX_XDG:-}" == "true" ]]; then
+        HEX_CONFIG_PATH="${XDG_CONFIG_HOME:-$HOME/.config}/hex/hex.config"
+    else
+        HEX_CONFIG_PATH="$HOME/.hex/hex.config"
+    fi
+fi
 
 REMOVE_MODE=false
 REMOVE_SCOPED_MODE=false
@@ -43,7 +52,7 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") [OPTIONS] [DAYS]
 
-Set a minimum package release age across pip, uv, Poetry, npm, pnpm, bun, deno, yarn, vlt, and Bundler.
+Set a minimum package release age across pip, uv, Poetry, npm, pnpm, bun, deno, yarn, vlt, Bundler, and Hex.
 
 Arguments:
   DAYS                    Minimum age in days (default: 7). Accepts "14" or "14d".
@@ -107,6 +116,7 @@ tool_config_path() {
         vlt) printf '%s\n' "$VLT_CONFIG_PATH" ;;
         vlt-cron) printf '%s\n' "crontab entry ($VLT_CRON_MARKER)" ;;
         bundler) printf '%s\n' "$BUNDLER_CONFIG_PATH" ;;
+        hex) printf '%s\n' "$HEX_CONFIG_PATH" ;;
         *) return 1 ;;
     esac
 }
@@ -180,7 +190,7 @@ parse_exception_spec() {
             fi
             YARN_EXCEPTIONS+=("$value")
             ;;
-        pip|yarn-classic|deno|pixi|vlt|bundler)
+        pip|yarn-classic|deno|pixi|vlt|bundler|hex)
             echo "Error: $target does not support native exceptions." >&2
             exit 1
             ;;
@@ -195,7 +205,7 @@ parse_remove_tool() {
     local tool="$1"
 
     case "$tool" in
-        pip|uv|uv-cron|poetry|npm|pnpm|bun|deno|pixi|yarn-classic|yarn-berry|vlt|vlt-cron|bundler)
+        pip|uv|uv-cron|poetry|npm|pnpm|bun|deno|pixi|yarn-classic|yarn-berry|vlt|vlt-cron|bundler|hex)
             ;;
         *)
             echo "Error: Unknown remove tool: $tool" >&2
@@ -339,16 +349,17 @@ result_tool_display_name() {
         vlt) printf '%s\n' "vlt" ;;
         vlt-cron) printf '%s\n' "vlt cron" ;;
         bundler) printf '%s\n' "Bundler" ;;
+        hex) printf '%s\n' "Hex" ;;
         *) printf '%s\n' "$1" ;;
     esac
 }
 
 init_results_table() {
-    RESULT_TOOL_KEYS=(pip uv uv-cron poetry npm pnpm bun deno pixi yarn-classic yarn-berry vlt vlt-cron bundler)
-    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- -- --)
-    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "" "")
-    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- -- --)
-    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "" "")
+    RESULT_TOOL_KEYS=(pip uv uv-cron poetry npm pnpm bun deno pixi yarn-classic yarn-berry vlt vlt-cron bundler hex)
+    RESULT_CONFIG_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- -- -- --)
+    RESULT_CONFIG_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "" "" "")
+    RESULT_VALIDATION_STATUSES=(-- -- -- -- -- -- -- -- -- -- -- -- -- -- --)
+    RESULT_VALIDATION_DETAILS=("" "" "" "" "" "" "" "" "" "" "" "" "" "" "")
 }
 
 result_row_index() {
@@ -367,6 +378,7 @@ result_row_index() {
         vlt) printf '%s\n' 11 ;;
         vlt-cron) printf '%s\n' 12 ;;
         bundler) printf '%s\n' 13 ;;
+        hex) printf '%s\n' 14 ;;
         *) return 1 ;;
     esac
 }
@@ -529,6 +541,19 @@ detect_command_version() {
     extract_semver "$raw_version" || true
 }
 
+detect_hex_version() {
+    local mix_path="$1"
+    local raw_version=""
+
+    raw_version=$("$mix_path" hex.info 2>/dev/null) || return 1
+    if [[ "$raw_version" =~ Hex:[[:space:]]*([0-9]+(\.[0-9]+)+) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+    fi
+
+    extract_semver "$raw_version" || true
+}
+
 detect_supported_tool_installations() {
     local tool_path=""
     local tool_version=""
@@ -607,6 +632,16 @@ detect_supported_tool_installations() {
         printf 'Bundler|yes|%s|%s\n' "$tool_path" "${tool_version:-unknown}"
     else
         printf 'Bundler|no|not found|n/a\n'
+    fi
+
+    if tool_path=$(resolve_tool_path_with_which "mix"); then
+        if tool_version=$(detect_hex_version "$tool_path") && [[ -n "$tool_version" ]]; then
+            printf 'Hex|yes|%s|%s\n' "$tool_path" "$tool_version"
+        else
+            printf 'Hex|no|%s|n/a\n' "$tool_path"
+        fi
+    else
+        printf 'Hex|no|not found|n/a\n'
     fi
 
     if yarn_path=$(resolve_tool_path_with_which "yarn"); then
@@ -1718,7 +1753,11 @@ run_preflight_checks() {
         record_preflight_skip "Poetry" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
 
-    ensure_tool_version "npm" "11.10.0" "min-release-age" || status=1
+    if [[ ${#NPM_EXCEPTIONS[@]} -gt 0 ]]; then
+        ensure_tool_version "npm" "12.0.0" "min-release-age-exclude" || status=1
+    else
+        ensure_tool_version "npm" "11.10.0" "min-release-age" || status=1
+    fi
 
     for selector in "${PNPM_EXCEPTIONS[@]-}"; do
         if pnpm_exception_is_version_selector "$selector"; then
@@ -1813,7 +1852,24 @@ run_preflight_checks() {
     fi
 
     ensure_tool_version "deno" "2.6.0" "minimumDependencyAge" || status=1
-    ensure_tool_version "pixi" "0.47.0" "exclude-newer" || status=1
+    ensure_tool_version "pixi" "0.67.0" "relative exclude-newer" || status=1
+
+    installed=$(lookup_detected_tool_field "Hex" installed)
+    version=$(lookup_detected_tool_field "Hex" version)
+    path=$(lookup_detected_tool_field "Hex" path)
+    if [[ "$installed" == "yes" ]]; then
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_fail "Hex" "$installed" "$version" "$path" "cooldown requires version detection; installed version could not be determined" "hex"
+            status=1
+        elif version_gte "$version" "2.5.0"; then
+            record_preflight_ok "Hex" "$installed" "$version" "$path" "cooldown requires >= 2.5.0"
+        else
+            record_preflight_fail "Hex" "$installed" "$version" "$path" "cooldown requires >= 2.5.0" "hex"
+            status=1
+        fi
+    else
+        record_preflight_skip "Hex" "$installed" "$version" "$path" "not installed; config can still be written"
+    fi
 
     return "$status"
 }
@@ -1837,6 +1893,7 @@ run_remove_tools() {
             vlt) remove_vlt ;;
             vlt-cron) remove_cron_vlt ;;
             bundler) remove_bundler ;;
+            hex) remove_hex ;;
         esac
     done
 }
@@ -1856,6 +1913,7 @@ print_config_files() {
     echo "  pixi           $(tool_config_path pixi)"
     echo "  vlt            $(tool_config_path vlt)"
     echo "  Bundler        $(tool_config_path bundler)"
+    echo "  Hex            $(tool_config_path hex)"
     echo ""
 }
 
@@ -2646,6 +2704,35 @@ setup_bundler() {
     fi
 }
 
+setup_hex() {
+    local hex_conf="$HEX_CONFIG_PATH"
+    local desired_line="{cooldown,<<\"${MIN_AGE_DAYS}d\">>}."
+    local detail="cooldown = ${MIN_AGE_DAYS}d"
+    local current status
+
+    ensure_file_exists "$hex_conf"
+    if grep -Fqx "$desired_line" "$hex_conf" 2>/dev/null; then
+        emit_config_status "Hex" "hex" "ok" "$detail"
+        SKIPPED_TOOLS+=("hex")
+        return 0
+    fi
+
+    backup_if_exists "$hex_conf"
+    status="added"
+    if grep -q '^[{]cooldown,' "$hex_conf" 2>/dev/null; then
+        current=$(grep '^[{]cooldown,' "$hex_conf" | head -1 | sed 's/.*<<"//; s/d">>.*//')
+        status="updated"
+        detail="${current}d --> ${MIN_AGE_DAYS}d"
+    fi
+
+    replace_or_append_line "$hex_conf" '^[{]cooldown,' "$desired_line"
+    if verify_and_finalize "$hex_conf" "hex" '^[{]cooldown,'; then
+        emit_config_status "Hex" "hex" "$status" "$detail"
+    else
+        emit_config_status "Hex" "hex" "FAIL" "$detail"
+    fi
+}
+
 remove_pip() {
     local pip_conf="$HOME/.config/pip/pip.conf"
     local current detail
@@ -3045,6 +3132,28 @@ remove_bundler() {
     cleanup_yaml_marker_only_file "$bundler_conf"
 }
 
+remove_hex() {
+    local hex_conf="$HEX_CONFIG_PATH"
+    local current
+
+    if ! grep -q '^[{]cooldown,' "$hex_conf" 2>/dev/null; then
+        emit_config_status "Hex" "hex" "ok" "cooldown not present"
+        SKIPPED_TOOLS+=("hex")
+        return 0
+    fi
+
+    current=$(grep '^[{]cooldown,' "$hex_conf" | head -1 | sed 's/.*<<"//; s/d">>.*//')
+    backup_if_exists "$hex_conf"
+    remove_matching_lines "$hex_conf" '^[{]cooldown,'
+
+    if verify_and_finalize "$hex_conf" "hex" '^[{]cooldown,'; then
+        emit_config_status "Hex" "hex" "removed" "cooldown = ${current}d"
+    else
+        emit_config_status "Hex" "hex" "FAIL" "cooldown = ${current}d"
+    fi
+    cleanup_empty_file "$hex_conf"
+}
+
 validate_configs() {
     local pip_conf="$HOME/.config/pip/pip.conf"
     local uv_conf="$HOME/.config/uv/uv.toml"
@@ -3056,6 +3165,7 @@ validate_configs() {
     local yarnrc="$HOME/.yarnrc"
     local yarnrc_yml="$HOME/.yarnrc.yml"
     local bundler_conf="$BUNDLER_CONFIG_PATH"
+    local hex_conf="$HEX_CONFIG_PATH"
     local expected_vlt_before="\"before\": \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
     local expected_pip_line="uploaded-prior-to = $(pip_uploaded_prior_to_value)"
     local expected_uv_date="exclude-newer = \"P${MIN_AGE_DAYS}D\""
@@ -3065,6 +3175,7 @@ validate_configs() {
     local expected_yarn_v1_age="cache-min $(( MIN_AGE_DAYS * 86400 ))"
     local expected_yarn_v2_age="npmMinimalAgeGate: $(yaml_quote "${MIN_AGE_DAYS}d")"
     local expected_bundler_age="BUNDLE_COOLDOWN: \"${MIN_AGE_DAYS}\""
+    local expected_hex_age="{cooldown,<<\"${MIN_AGE_DAYS}d\">>}."
     local expected_uv_exceptions=""
     local expected_poetry_exceptions=""
     local expected_poetry_source_exceptions=""
@@ -3246,6 +3357,16 @@ validate_configs() {
     else
         record_validation_skip "Bundler" "config not present" "bundler"
     fi
+
+    if [[ -f "$hex_conf" ]]; then
+        if grep -Fqx "$expected_hex_age" "$hex_conf" 2>/dev/null; then
+            record_validation_ok "Hex" "cooldown matches" "hex"
+        else
+            record_validation_fail "Hex" "cooldown setting does not match" "hex"
+        fi
+    else
+        record_validation_skip "Hex" "config not present" "hex"
+    fi
 }
 
 validate_wrapper_tool() {
@@ -3317,7 +3438,7 @@ main() {
         printf "  %-16s %-10s %s\n" "TOOL" "STATUS" "DETAIL"
         print_separator
 
-        run_remove_tools pip uv uv-cron poetry npm pnpm bun deno pixi yarn-classic yarn-berry vlt vlt-cron bundler
+        run_remove_tools pip uv uv-cron poetry npm pnpm bun deno pixi yarn-classic yarn-berry vlt vlt-cron bundler hex
 
         echo ""
         echo "  Summary"
@@ -3400,6 +3521,7 @@ main() {
     run_progress_step vlt config setup_vlt
     run_progress_step vlt-cron config setup_cron_vlt
     run_progress_step bundler config setup_bundler
+    run_progress_step hex config setup_hex
 
     print_progress_status "all tools" "validate" "start" "checking managed config files"
     validate_configs

@@ -18,8 +18,9 @@ Supported tools:
 - `pixi` via a shell wrapper that injects `--exclude-newer` (no user-level config exists)
 - `vlt`
 - `Bundler`
+- `Hex`
 
-The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `Poetry`, `npm`, `pnpm`, `bun`, and Yarn Berry. The Deno and Pixi wrappers do not support `--exception`; those tools only accept per-package exceptions through their project files (`deno.json`, `pixi.toml`).
+The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `Poetry`, `npm`, `pnpm`, `bun`, and Yarn Berry. The Deno and Pixi wrappers do not support `--exception`; those tools only accept per-package exceptions through their project files (`deno.json`, `pixi.toml`). Hex supports repository exclusions through its separate `cooldown_exclude_repos` setting, which this repo preserves but does not manage.
 
 ## Architecture
 
@@ -48,8 +49,9 @@ Validation is config-based for every supported tool. `validate_configs()` checks
 - `yarn berry (v2+)`
 - `vlt`
 - `Bundler`
+- `Hex`
 
-This is intentional: it avoids relying on inconsistent CLI config getters and ensures every managed config file, including `bun`, the Deno and Pixi wrappers, Poetry, and Bundler, is validated.
+This is intentional: it avoids relying on inconsistent CLI config getters and ensures every managed config file, including `bun`, the Deno and Pixi wrappers, Poetry, Bundler, and Hex, is validated.
 
 ## Package Manager Policy
 
@@ -76,7 +78,9 @@ If dependencies are added later:
 
 ## Last Dependency Update
 
-2026-07-26: Dependency maintenance scan found no dependency-managed ecosystems, manifests, lockfiles, or CI install workflows. Primary documentation review confirmed no additional mainstream package manager with a suitable client-side age gate, corrected Deno's minimum to 2.6.0 and documented its 2.9 default, and set Pixi's minimum to 0.47.0. Bundler's managed cooldown remains available from 4.0.13; older or unknown installed versions warn while the config is still written for a future upgrade.
+2026-08-04: Dependency maintenance scan found no dependency-managed ecosystems, manifests, lockfiles, or CI install workflows. Primary documentation review added Hex 2.5+ native cooldown support, corrected npm package exclusions to require npm 12 while retaining the npm 11.10 base gate, and corrected the Pixi wrapper's relative-duration minimum to 0.67.0. Cargo native cooldown remains accepted but not yet implemented upstream; Conda, Go, Maven/Gradle, NuGet, and Composer still lack native client-side cooldowns.
+
+2026-07-26: Dependency maintenance scan found no dependency-managed ecosystems, manifests, lockfiles, or CI install workflows. Primary documentation review confirmed no additional mainstream package manager with a suitable client-side age gate, corrected Deno's minimum to 2.6.0 and documented its 2.9 default, and set Pixi's original timestamp cutoff minimum to 0.47.0. Bundler's managed cooldown remains available from 4.0.13; older or unknown installed versions warn while the config is still written for a future upgrade.
 
 2026-07-06: Dependency maintenance scan found no dependency-managed ecosystems, manifests, lockfiles, CI install workflows, or Ansible/service dependency surfaces. No package-manager migrations or dependency updates were performed.
 
@@ -106,6 +110,7 @@ Recorded package changes: none recorded.
 - Validation should remain aligned with the exact config lines the scripts manage, including exception entries where supported.
 - Yarn Classic should remain documented as a workaround, not true publish-age enforcement.
 - Bundler cooldown should remain documented as requiring Bundler `4.0.13+`; unsupported installed Bundler versions should warn rather than block other package-manager configuration.
+- Hex cooldown should remain documented as requiring Hex `2.5.0+` and applying only during fresh dependency resolution, not unchanged lockfile installs.
 - Normal runs should continue to stream progress after readiness so users are not left waiting silently before final results.
 - Deno and Pixi should remain documented as shell-wrapper workarounds. Deno 2.8+ also reads the npm setting from `.npmrc`, but the wrapper preserves an independently managed age on Deno 2.6+; Pixi still has no user-level setting.
 - If a behavior exists in the shared core, test it there instead of duplicating logic in both wrappers.

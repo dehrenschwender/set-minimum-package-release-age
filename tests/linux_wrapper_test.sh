@@ -9,7 +9,7 @@ test_linux_wrapper() {
     setup_test_env
     install_fake_date
     install_fake_crontab
-    install_fake_validation_tools "1.22.22" "11.10.0" "11.0.0"
+    install_fake_validation_tools "1.22.22" "12.0.1" "11.0.0"
 
     local output
     output=$(bash "$PROJECT_ROOT/set_package_min_age_linux.sh" 3 --exception pnpm:webpack)
