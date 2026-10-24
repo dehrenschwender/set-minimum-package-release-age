@@ -371,12 +371,11 @@ These package managers have no usable user-level release-age setting yet (as of 
 | Tool | Why not yet | Issue |
 |---|---|---|
 | Composer | cooldown only in 2.11.0-RC1; stable 2.10 has none | [#4](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/4) |
-| mamba / micromamba | `exclude_newer` shipped in 2.10.0 on 2026-10-23; needs a real-binary check | [#5](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/5) |
+| mamba / micromamba | works in 2.10.0, but no installable 2.10 build exists yet; older versions silently ignore it | [#5](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/5) |
 | conda | `exclude_newer` breaks every install with the default libmamba solver | [#6](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/6) |
-| aube | native gate exists; minimum version not pinned down yet | [#7](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/7) |
+| aube | user config works from 1.9.0, but 2.8.2 ignores the gate on a cold cache | [#7](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/7) |
 | NuGet / dotnet | package update cooldown not released yet | [#8](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/8) |
-| RubyGems `gem` | cooldown in 4.1 prerelease; Bundler's `BUNDLE_COOLDOWN` should cover it | [#9](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/9) |
-| pipx | only `PIPX_COOLDOWN` (no config file); already covered through uv/pip config | [#10](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/10) |
+| RubyGems `gem` | 4.1 (beta) reads the `BUNDLE_COOLDOWN` we already write; waiting for 4.1.0 | [#9](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/9) |
 | Go modules | proposal on hold | [#11](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/11) |
 | Maven | declined upstream | [#12](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/12) |
 | Gradle | open upstream request | [#13](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/13) |
@@ -387,10 +386,10 @@ These package managers have no usable user-level release-age setting yet (as of 
 | CocoaPods | no feature found | [#18](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/18) |
 | CPAN (cpanm / cpm) | no feature found | [#19](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/19) |
 | Nix | no feature found | [#20](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/20) |
-| aqua | no feature found | [#21](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/21) |
+| aqua | publish dates now recorded (groundwork), no cooldown setting yet | [#21](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/21) |
 | asdf | no feature found (mise is supported) | [#22](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/22) |
 
-Tools that delegate to a supported manager are already covered through it: pip-tools and Hatch (pip / uv), Corepack, Volta, ni, nypm, and the JSR CLI (the npm-compatible manager they run).
+Tools that delegate to a supported manager are already covered through it: pipx, pip-tools and Hatch (pip / uv), and Corepack, Volta, ni, nypm, and the JSR CLI (the npm-compatible manager they run). pipx was verified with both backends ([#10](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/10)). An explicit `PIPX_COOLDOWN` / `--cooldown` overrides the pip setting, and a very long pip cooldown can block pipx's own `pip>=26.1` bootstrap.
 
 ## Issues and Follow-ups
 

@@ -228,5 +228,11 @@ The tests use a temporary `HOME`, fake manager binaries, and fake `crontab` and 
 - GitHub #2: vlt (1.6.0) still only accepts an absolute `before` date, so it is the one tool that needs a scheduled refresh (launchd on macOS, cron on Linux). Never write a relative value: `@vltpkg/pick-manifest` parses it with `new Date(before)`, so `7d`/`P7D` becomes an invalid date and every version is rejected. Watch vltpkg/vltpkg#1503 (relative publish-date filter request, open) and drop the scheduler once a relative setting ships. The uv cron is already gone; only legacy-entry cleanup remains.
 - GitHub #3: Deno has no user-level minimum dependency age setting, so the shell wrapper remains; replace it once Deno ships one.
 - Yarn Berry 4.17+ upstream bug (yarnpkg/berry#7192): `npmScopes` entries without their own gate use the `1d` default, not the global `npmMinimalAgeGate`.
-- Unsupported package managers each have a GitHub issue with the reason and the trigger for adding support (#4–#22): Composer #4, mamba/micromamba #5, conda #6, aube #7, NuGet #8, RubyGems `gem` #9, pipx #10, Go #11, Maven #12, Gradle #13, Homebrew #14, Dart pub #15, Julia Pkg #16, Swift PM #17, CocoaPods #18, CPAN #19, Nix #20, aqua #21, asdf #22. Keep the README "Not Yet Supported" table in sync when one is added or closed.
+- Unsupported package managers each have a GitHub issue with the reason and the trigger for adding support (#4–#22): Composer #4, mamba/micromamba #5, conda #6, aube #7, NuGet #8, RubyGems `gem` #9, Go #11, Maven #12, Gradle #13, Homebrew #14, Dart pub #15, Julia Pkg #16, Swift PM #17, CocoaPods #18, CPAN #19, Nix #20, aqua #21, asdf #22. Keep the README "Not Yet Supported" table in sync when one is added or closed. pipx (#10) was closed as covered by the pip/uv config.
+- Findings from real-binary checks (2026-10-24) are in the issues:
+  - Composer 2.11 needs the string `"7 days"` (a bare integer means seconds), and 2.10 silently ignores the setting.
+  - mamba has no installable 2.10 build yet, and older versions silently ignore the setting.
+  - conda's libmamba and rattler solvers hard-fail with it.
+  - aube's user config needs 1.9.0+, but 2.8.2 ignores the gate on a cold cache.
+  - RubyGems 4.1 beta reads `BUNDLE_COOLDOWN`.
 - Also revisit pixi workspace config if a user-level setting appears.
