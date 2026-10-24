@@ -1,0 +1,58 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zsh
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+      - name: Syntax check
+        run: |
+          for file in lib/*.sh set_package_min_age_*.sh tests/*.sh; do
+            bash -n "$file"
+          done
+      - name: Test suite
+        run: bash tests/run.sh
+      - name: Test suite with macOS /bin/bash 3.2
+        if: runner.os == 'macOS'
+        run: /bin/bash tests/run.sh
+
+  distro:
+    # Runs each distro with `docker run` from an Ubuntu host: JavaScript actions
+    # such as actions/checkout cannot run inside Alpine (musl) containers.
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # gawk, no `which` binary
+          - image: fedora:latest
+            setup: dnf -y -q install bash zsh diffutils
+          # BusyBox awk/diff/sed/mktemp
+          - image: alpine:latest
+            setup: apk add -q bash zsh
+          # mawk, dash as /bin/sh
+          - image: debian:stable-slim
+            setup: apt-get update -qq && apt-get install -y -qq diffutils zsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test suite
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" "${{ matrix.image }}" sh -c \
+            '${{ matrix.setup }} >/dev/null && cp -R /repo /work && cd /work && bash tests/run.sh'
