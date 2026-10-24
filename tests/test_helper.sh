@@ -9,20 +9,60 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMMON_LIB="$PROJECT_ROOT/lib/set_package_min_age_common.sh"
 
+# Tests are independent (each uses its own temp HOME), so they run in parallel.
+# Output is buffered per test and printed in declaration order by finish_tests.
+# Set TEST_JOBS=1 to run serially.
+TEST_JOBS="${TEST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+TEST_RESULTS_DIR=""
+TEST_NAMES=()
+TEST_PIDS=()
+TEST_NEXT_TO_WAIT=0
+
 run_test() {
     local name="$1"
     shift
-    TESTS_RUN=$((TESTS_RUN + 1))
-    if ( "$@" ); then
-        printf 'PASS %s\n' "$name"
-        return 0
+    local idx="${#TEST_NAMES[@]}"
+
+    if [[ -z "$TEST_RESULTS_DIR" ]]; then
+        TEST_RESULTS_DIR="$(mktemp -d)"
     fi
-    TESTS_FAILED=$((TESTS_FAILED + 1))
-    printf 'FAIL %s\n' "$name" >&2
-    return 1
+
+    # Keep at most TEST_JOBS tests running; bash 3.2 has no `wait -n`, so wait
+    # for the oldest one.
+    while (( ${#TEST_PIDS[@]} - TEST_NEXT_TO_WAIT >= TEST_JOBS )); do
+        wait "${TEST_PIDS[$TEST_NEXT_TO_WAIT]}" 2>/dev/null || true
+        TEST_NEXT_TO_WAIT=$((TEST_NEXT_TO_WAIT + 1))
+    done
+
+    TEST_NAMES+=("$name")
+    (
+        status=0
+        ( "$@" ) >"$TEST_RESULTS_DIR/$idx.out" 2>&1 || status=$?
+        printf '%s\n' "$status" >"$TEST_RESULTS_DIR/$idx.status"
+    ) &
+    TEST_PIDS+=("$!")
+    return 0
 }
 
 finish_tests() {
+    local idx status
+
+    wait 2>/dev/null || true
+    for idx in "${!TEST_NAMES[@]}"; do
+        TESTS_RUN=$((TESTS_RUN + 1))
+        cat "$TEST_RESULTS_DIR/$idx.out" 2>/dev/null || true
+        status=$(cat "$TEST_RESULTS_DIR/$idx.status" 2>/dev/null || echo 1)
+        if [[ "$status" == "0" ]]; then
+            printf 'PASS %s\n' "${TEST_NAMES[$idx]}"
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
+            printf 'FAIL %s\n' "${TEST_NAMES[$idx]}" >&2
+        fi
+    done
+    if [[ -n "$TEST_RESULTS_DIR" ]]; then
+        rm -rf "$TEST_RESULTS_DIR"
+    fi
+
     if [[ $TESTS_FAILED -gt 0 ]]; then
         printf '\n%s of %s tests failed\n' "$TESTS_FAILED" "$TESTS_RUN" >&2
         return 1
@@ -55,6 +95,22 @@ assert_before() {
     [[ "$haystack" == *"$first"* ]] || fail "expected output to contain [$first]"
     [[ "$haystack" == *"$second"* ]] || fail "expected output to contain [$second]"
     [[ "${haystack#*"$first"}" == *"$second"* ]] || fail "expected [$first] to appear before [$second]"
+}
+
+# Expected text of a Tools row ("  * pip         26.1       ") for assertions.
+expect_tool_row() {
+    printf '  %s %-12s %-10s' "$1" "$2" "$3"
+}
+
+# Expected start of a Changes row ("  * pip         added     ").
+expect_change_row() {
+    printf '  %s %-12s %-9s ' "$1" "$2" "$3"
+}
+
+# Output with line breaks and repeated spaces collapsed, so assertions on
+# wrapped text do not depend on the terminal width.
+flatten_output() {
+    printf '%s' "$1" | tr '\n' ' ' | tr -s ' '
 }
 
 assert_file_contains() {
@@ -92,12 +148,23 @@ assert_array_contains() {
 
 setup_test_env() {
     TEST_ROOT="$(mktemp -d)"
+    export TEST_ROOT
     export HOME="$TEST_ROOT/home"
-    export XDG_CONFIG_HOME="$HOME/.config"
+    # Keep the developer's own config-location overrides out of the tests.
+    # Deterministic output: ASCII symbols, default width, no color.
+    export SET_PACKAGE_MIN_AGE_GLYPHS=ascii
+    unset COLUMNS NO_COLOR FORCE_COLOR
+    unset XDG_CONFIG_HOME ZDOTDIR POETRY_CONFIG_DIR NPM_CONFIG_USERCONFIG npm_config_userconfig \
+        BUNDLE_USER_CONFIG BUNDLE_USER_HOME HEX_HOME MIX_XDG \
+        XDG_DATA_HOME PDM_CONFIG_FILE MISE_GLOBAL_CONFIG_FILE MISE_CONFIG_DIR CARGO_HOME PIXI_HOME
     export TEST_BIN_DIR="$TEST_ROOT/bin"
     export TEST_CRONTAB_FILE="$TEST_ROOT/crontab"
     export PATH="$TEST_BIN_DIR:/usr/bin:/bin"
-    mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$TEST_BIN_DIR"
+    mkdir -p "$HOME/.config" "$TEST_BIN_DIR"
+    # Always shadow the schedulers: PATH still includes /usr/bin, so a test that
+    # unexpectedly reaches the cron/launchd step must never touch the real ones.
+    install_fake_crontab
+    install_fake_launchctl
 }
 
 cleanup_test_env() {
@@ -116,10 +183,8 @@ load_common_library() {
         printf '%s\n' "${TEST_FIXED_RFC3339:-2026-03-29T00:00:00Z}"
     }
 
-    platform_build_uv_cron_command() {
-        local min_age="$1"
-        local uv_conf="$2"
-        printf '0 0 * * * echo %s >> %s %s\n' "$min_age" "$uv_conf" "$CRON_MARKER"
+    platform_vlt_refresh_script_path() {
+        printf '%s\n' "/opt/test & co/set_package_min_age_test.sh"
     }
 
     platform_build_vlt_cron_command() {
@@ -130,6 +195,72 @@ load_common_library() {
 
     # shellcheck disable=SC1090
     source "$COMMON_LIB"
+}
+
+# Older releases installed a daily uv cron job; current runs only clean it up.
+install_legacy_uv_cron_entry() {
+    ( crontab -l 2>/dev/null || true; printf '0 0 * * * echo legacy-uv-refresh %s\n' "$CRON_MARKER" ) | crontab -
+}
+
+# Older releases installed a pixi wrapper that broke pixi; current runs remove it.
+install_legacy_pixi_wrapper() {
+    local rc
+    mkdir -p "$HOME/.config/set-package-min-age"
+    printf '%s\n# minimum-release-age: 7d\npixi() { command pixi "$@"; }\n' "$PIXI_WRAPPER_MARKER" \
+        > "$HOME/.config/set-package-min-age/pixi.sh"
+    for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+        printf '%s\n%s\n' "$PIXI_WRAPPER_MARKER" "$(pixi_source_line)" >> "$rc"
+    done
+}
+
+write_pixi_global_manifest() {
+    mkdir -p "$(dirname "$PIXI_GLOBAL_MANIFEST_PATH")"
+    printf 'version = 1\n\n[envs.ripgrep]\nchannels = ["conda-forge"]\ndependencies = { ripgrep = "*" }\n' \
+        > "$PIXI_GLOBAL_MANIFEST_PATH"
+}
+
+# Installs a fake binary that prints VERSION_OUTPUT for --version.
+install_fake_version_binary() {
+    local name="$1"
+    local version_output="$2"
+    cat > "$TEST_BIN_DIR/$name" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "--version" ]]; then
+    printf '%s\n' "$version_output"
+    exit 0
+fi
+printf 'ARGS: %s\n' "\$*"
+EOF
+    chmod +x "$TEST_BIN_DIR/$name"
+}
+
+install_fake_launchctl() {
+    cat > "$TEST_BIN_DIR/launchctl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${TEST_ROOT:?}/launchd"
+mkdir -p "$state"
+printf '%s\n' "$*" >> "$TEST_ROOT/launchctl.log"
+case "${1:-}" in
+    print)
+        [[ -f "$state/${2##*/}" ]]
+        ;;
+    bootstrap)
+        if [[ "${TEST_LAUNCHCTL_FAIL_BOOTSTRAP:-0}" == "1" ]]; then
+            exit 5
+        fi
+        touch "$state/$(basename "$3" .plist)"
+        ;;
+    bootout)
+        [[ -f "$state/${2##*/}" ]] || exit 3
+        rm -f "$state/${2##*/}"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+EOF
+    chmod +x "$TEST_BIN_DIR/launchctl"
 }
 
 install_fake_crontab() {
@@ -151,17 +282,15 @@ case "${1:-}" in
     -r)
         rm -f "$state"
         ;;
-    -)
-        if [[ "${TEST_CRONTAB_FAIL_WRITE:-0}" == "1" ]]; then
-            exit 1
-        fi
-        cat > "$state"
-        ;;
     *)
         if [[ "${TEST_CRONTAB_FAIL_WRITE:-0}" == "1" ]]; then
             exit 1
         fi
-        cat > "$state"
+        # Buffer stdin like the real crontab so `crontab -l | ... | crontab -`
+        # does not truncate the file while it is still being read.
+        tmp="$(mktemp "${state}.XXXXXX")"
+        cat > "$tmp"
+        mv "$tmp" "$state"
         ;;
 esac
 EOF
@@ -208,7 +337,7 @@ install_fake_detection_tools() {
     local poetry_version="${13:-2.4.0}"
     local include_bundler="${14:-1}"
     local bundler_version="${15:-4.0.15}"
-    local pixi_version="${16:-0.67.0}"
+    local pixi_version="${16:-0.83.0}"
     local include_hex="${17:-1}"
     local hex_version="${18:-2.5.1}"
 
@@ -394,7 +523,7 @@ install_fake_validation_tools() {
     local npm_version="${2:-12.0.1}"
     local pnpm_version="${3:-10.19.0}"
     local deno_version="${4:-2.9.0}"
-    local pixi_version="${5:-0.67.0}"
+    local pixi_version="${5:-0.83.0}"
 
     install_fake_detection_tools "$yarn_version" 1 "$npm_version" "$pnpm_version" "" "" "" 1 "" 1 "$deno_version" 1 "" 1 "" "$pixi_version"
 

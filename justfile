@@ -10,12 +10,15 @@ default:
 
 syntax-check:
   bash -n {{common_lib}}
+  bash -n lib/set_package_min_age_ui.sh
   bash -n {{linux_script}}
   bash -n {{macos_script}}
   bash -n tests/test_helper.sh
   bash -n tests/common_test.sh
   bash -n tests/linux_wrapper_test.sh
   bash -n tests/macos_wrapper_test.sh
+  bash -n tests/shell_test.sh
+  bash -n tests/ui_test.sh
   bash -n {{test_runner}}
 
 test:
