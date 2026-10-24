@@ -156,6 +156,7 @@ Recorded package changes: none recorded.
 - Tool version probes must remain bounded so one broken package manager cannot prevent readiness output.
 - Functions that read detection results must fill the cache in the parent shell (`load_tool_detection_cache`) before any `$(...)` lookup; a cache filled inside a subshell is lost and re-probes every tool.
 - Tests must never reach the real `crontab` or `launchctl`; `setup_test_env` installs fakes for both and new scheduler code must keep that guarantee.
+- Tests run with a hermetic `PATH` (`TEST_BIN_DIR` plus `TEST_SYSTEM_BIN`, which links every system utility except the package managers and schedulers in `TEST_HIDDEN_SYSTEM_COMMANDS`). Add any newly supported tool's command names there, or a machine that ships it (for example `/usr/bin/pip` on GitHub's Ubuntu runner) breaks the tests.
 - Shell code must stay compatible with macOS `/bin/bash` 3.2 (no `wait -n`, `mapfile`, `${var,,}`, or `declare -A`); cron and launchd run the wrapper with `/bin/bash`.
 - Keep the code portable across GNU, BSD/macOS, and BusyBox userlands (CI covers Ubuntu, macOS, Fedora, Alpine, Debian):
   - find commands with `type -P`, never `which` (Fedora and containers lack it);

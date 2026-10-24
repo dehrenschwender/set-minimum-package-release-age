@@ -18,6 +18,27 @@ TEST_NAMES=()
 TEST_PIDS=()
 TEST_NEXT_TO_WAIT=0
 
+# Hermetic PATH for tests: every system utility from /usr/bin and /bin, but none
+# of the package managers or schedulers the scripts detect. Without this, a
+# machine that ships one (GitHub's Ubuntu runner has /usr/bin/pip) makes tests
+# see the real tool instead of the fake one. Built once per test file.
+TEST_HIDDEN_SYSTEM_COMMANDS=(
+    pip pip3 uv uvx poetry pdm pipx npm npx pnpm pnpx bun bunx deno pixi vlt
+    yarn yarnpkg corepack node bundle bundler gem mix elixir cargo rustup mise
+    crontab launchctl
+)
+create_test_system_bin() {
+    local name
+    TEST_SYSTEM_BIN="$(mktemp -d)"
+    ln -s /usr/bin/* "$TEST_SYSTEM_BIN"/ 2>/dev/null || true
+    ln -s /bin/* "$TEST_SYSTEM_BIN"/ 2>/dev/null || true
+    for name in "${TEST_HIDDEN_SYSTEM_COMMANDS[@]}"; do
+        rm -f "$TEST_SYSTEM_BIN/$name"
+    done
+    rm -f "$TEST_SYSTEM_BIN"/pip3.* "$TEST_SYSTEM_BIN"/python3*-pip 2>/dev/null || true
+}
+create_test_system_bin
+
 run_test() {
     local name="$1"
     shift
@@ -62,6 +83,7 @@ finish_tests() {
     if [[ -n "$TEST_RESULTS_DIR" ]]; then
         rm -rf "$TEST_RESULTS_DIR"
     fi
+    rm -rf "$TEST_SYSTEM_BIN"
 
     if [[ $TESTS_FAILED -gt 0 ]]; then
         printf '\n%s of %s tests failed\n' "$TESTS_FAILED" "$TESTS_RUN" >&2
@@ -159,7 +181,7 @@ setup_test_env() {
         XDG_DATA_HOME PDM_CONFIG_FILE MISE_GLOBAL_CONFIG_FILE MISE_CONFIG_DIR CARGO_HOME PIXI_HOME
     export TEST_BIN_DIR="$TEST_ROOT/bin"
     export TEST_CRONTAB_FILE="$TEST_ROOT/crontab"
-    export PATH="$TEST_BIN_DIR:/usr/bin:/bin"
+    export PATH="$TEST_BIN_DIR:$TEST_SYSTEM_BIN"
     mkdir -p "$HOME/.config" "$TEST_BIN_DIR"
     # Always shadow the schedulers: PATH still includes /usr/bin, so a test that
     # unexpectedly reaches the cron/launchd step must never touch the real ones.
