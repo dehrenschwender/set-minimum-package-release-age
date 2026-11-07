@@ -57,6 +57,39 @@ if [[ -z "${CARGO_CONFIG_PATH:-}" ]]; then
         CARGO_CONFIG_PATH="${CARGO_HOME:-$HOME/.cargo}/config.toml"
     fi
 fi
+# Composer reads only $COMPOSER_HOME/config.json. Without COMPOSER_HOME it uses
+# the first existing directory of $XDG_CONFIG_HOME/composer (only when any XDG_*
+# variable is set or /etc/xdg exists) and ~/.composer, else the first candidate.
+composer_uses_xdg() {
+    local xdg_vars
+    xdg_vars=$(compgen -e XDG_ 2>/dev/null || true)
+    [[ -n "$xdg_vars" || -d "${COMPOSER_SYSTEM_XDG_DIR:-/etc/xdg}" ]]
+}
+
+composer_home_dir() {
+    local candidates=() dir
+
+    if [[ -n "${COMPOSER_HOME:-}" ]]; then
+        printf '%s\n' "$COMPOSER_HOME"
+        return 0
+    fi
+    if composer_uses_xdg; then
+        candidates+=("${XDG_CONFIG_HOME:-$HOME/.config}/composer")
+    fi
+    candidates+=("$HOME/.composer")
+    for dir in "${candidates[@]}"; do
+        if [[ -d "$dir" ]]; then
+            printf '%s\n' "$dir"
+            return 0
+        fi
+    done
+    printf '%s\n' "${candidates[0]}"
+}
+COMPOSER_CONFIG_PATH="${COMPOSER_CONFIG_PATH:-$(composer_home_dir)/config.json}"
+# MAMBARC (or CONDARC) replaces every default rc file, so with MAMBARC set only
+# that file counts. CONDARC alone is reported, not written: conda reads it too
+# and fails on exclude_newer.
+MAMBA_CONFIG_PATH="${MAMBA_CONFIG_PATH:-${MAMBARC:-$HOME/.mambarc}}"
 # pixi uses the first existing manifest among $PIXI_HOME (default ~/.pixi) and the
 # platform config dir, and creates it under $PIXI_HOME when none exists yet.
 PIXI_PLATFORM_GLOBAL_MANIFEST_PATH="${PIXI_PLATFORM_GLOBAL_MANIFEST_PATH:-$CONFIG_HOME/pixi/manifests/pixi-global.toml}"
@@ -76,7 +109,7 @@ VLT_LAUNCHD_PLIST_PATH="${VLT_LAUNCHD_PLIST_PATH:-$HOME/Library/LaunchAgents/$VL
 TOOL_VERSION_TIMEOUT_SECONDS="${TOOL_VERSION_TIMEOUT_SECONDS:-5}"
 
 # Every managed tool key, in report order. Results rows are built from this list.
-ALL_TOOL_KEYS=(pip uv uv-cron poetry pdm npm pnpm bun deno pixi yarn-classic yarn-berry vlt vlt-cron bundler hex cargo mise)
+ALL_TOOL_KEYS=(pip uv uv-cron poetry pdm npm pnpm bun deno pixi yarn-classic yarn-berry vlt vlt-cron bundler hex cargo composer mamba mise)
 
 REMOVE_MODE=false
 REMOVE_SCOPED_MODE=false
@@ -95,6 +128,8 @@ MISE_EXCEPTIONS=()
 PIXI_EXCEPTIONS=()
 HEX_EXCEPTIONS=()
 CARGO_EXCEPTIONS=()
+COMPOSER_EXCEPTIONS=()
+MAMBA_EXCEPTIONS=()
 TOOL_DETECTION_CACHE=""
 # True while main() collects per-tool results for the summary.
 NORMAL_MODE_REPORTING=false
@@ -102,7 +137,6 @@ NORMAL_MODE_REPORTING=false
 RUN_MODE="apply"
 PREFLIGHT_WARN_TOOLS=()
 PREFLIGHT_WARN_DETAILS=()
-ROLLBACK_NOTES=()
 RESULT_TOOL_KEYS=()
 RESULT_CONFIG_STATUSES=()
 RESULT_CONFIG_DETAILS=()
@@ -121,7 +155,7 @@ usage() {
 Usage: $(basename "$0") [OPTIONS] [DAYS]
 
 Set a minimum package release age across pip, uv, Poetry, PDM, npm, pnpm, bun, deno, pixi,
-yarn, vlt, Bundler, Hex, Cargo, and mise.
+yarn, vlt, Bundler, Hex, Cargo, Composer, mamba/micromamba, and mise.
 
 Arguments:
   DAYS                    Minimum age in days (default: 7). Accepts "14" or "14d".
@@ -140,6 +174,8 @@ Options:
                           pixi:<package>[<version-spec>]   (pixi global manifest)
                           hex:<repository>                 (for example hexpm:myorg)
                           cargo:<registry>                 (exempts the whole registry)
+                          composer:<vendor/package>        (wildcards such as acme/*)
+                          mamba:<package>                  (mamba and micromamba)
   --remove                Remove all settings previously added by this script.
   --remove-tool TOOL      Remove settings only for a specific managed tool. May be provided
                           multiple times.
@@ -198,6 +234,8 @@ tool_config_path() {
         hex) printf '%s\n' "$HEX_CONFIG_PATH" ;;
         pdm) printf '%s\n' "$PDM_CONFIG_PATH" ;;
         cargo) printf '%s\n' "$CARGO_CONFIG_PATH" ;;
+        composer) printf '%s\n' "$COMPOSER_CONFIG_PATH" ;;
+        mamba) printf '%s\n' "$MAMBA_CONFIG_PATH" ;;
         mise) printf '%s\n' "$MISE_CONFIG_PATH" ;;
         *) return 1 ;;
     esac
@@ -205,7 +243,7 @@ tool_config_path() {
 
 tool_supports_native_exceptions() {
     case "$1" in
-        uv|poetry|npm|pnpm|bun|yarn-berry|mise|pixi|hex|cargo) return 0 ;;
+        uv|poetry|npm|pnpm|bun|yarn-berry|mise|pixi|hex|cargo|composer|mamba) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -302,6 +340,21 @@ parse_exception_spec() {
             fi
             CARGO_EXCEPTIONS+=("$value")
             ;;
+        composer)
+            # vendor/package, either part may use * wildcards.
+            if ! [[ "$value" =~ ^[A-Za-z0-9_.*-]+/[A-Za-z0-9_.*-]+$ ]]; then
+                echo "Error: composer exceptions must be <vendor>/<package>, for example acme/* or symfony/console." >&2
+                exit 1
+            fi
+            COMPOSER_EXCEPTIONS+=("$value")
+            ;;
+        mamba)
+            if ! [[ "$value" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+                echo "Error: mamba exceptions require a package name, for example python." >&2
+                exit 1
+            fi
+            MAMBA_EXCEPTIONS+=("$value")
+            ;;
         pip|pdm|yarn-classic|deno|vlt|bundler)
             echo "Error: $target does not support native exceptions." >&2
             exit 1
@@ -317,7 +370,7 @@ parse_remove_tool() {
     local tool="$1"
 
     case "$tool" in
-        pip|uv|uv-cron|poetry|pdm|npm|pnpm|bun|deno|pixi|yarn-classic|yarn-berry|vlt|vlt-cron|bundler|hex|cargo|mise)
+        pip|uv|uv-cron|poetry|pdm|npm|pnpm|bun|deno|pixi|yarn-classic|yarn-berry|vlt|vlt-cron|bundler|hex|cargo|composer|mamba|mise)
             ;;
         *)
             echo "Error: Unknown remove tool: $tool" >&2
@@ -347,6 +400,8 @@ parse_args() {
     PIXI_EXCEPTIONS=()
     HEX_EXCEPTIONS=()
     CARGO_EXCEPTIONS=()
+    COMPOSER_EXCEPTIONS=()
+    MAMBA_EXCEPTIONS=()
     TOOL_DETECTION_CACHE=""
 
     while [[ $# -gt 0 ]]; do
@@ -402,7 +457,7 @@ parse_args() {
     fi
 
     if [[ "$REMOVE_MODE" == true || "$REMOVE_SCOPED_MODE" == true ]]; then
-        if [[ ${#UV_EXCEPTIONS[@]} -gt 0 || ${#POETRY_EXCEPTIONS[@]} -gt 0 || ${#POETRY_SOURCE_EXCEPTIONS[@]} -gt 0 || ${#NPM_EXCEPTIONS[@]} -gt 0 || ${#PNPM_EXCEPTIONS[@]} -gt 0 || ${#BUN_EXCEPTIONS[@]} -gt 0 || ${#YARN_EXCEPTIONS[@]} -gt 0 || ${#MISE_EXCEPTIONS[@]} -gt 0 || ${#PIXI_EXCEPTIONS[@]} -gt 0 || ${#HEX_EXCEPTIONS[@]} -gt 0 || ${#CARGO_EXCEPTIONS[@]} -gt 0 ]]; then
+        if [[ ${#UV_EXCEPTIONS[@]} -gt 0 || ${#POETRY_EXCEPTIONS[@]} -gt 0 || ${#POETRY_SOURCE_EXCEPTIONS[@]} -gt 0 || ${#NPM_EXCEPTIONS[@]} -gt 0 || ${#PNPM_EXCEPTIONS[@]} -gt 0 || ${#BUN_EXCEPTIONS[@]} -gt 0 || ${#YARN_EXCEPTIONS[@]} -gt 0 || ${#MISE_EXCEPTIONS[@]} -gt 0 || ${#PIXI_EXCEPTIONS[@]} -gt 0 || ${#HEX_EXCEPTIONS[@]} -gt 0 || ${#CARGO_EXCEPTIONS[@]} -gt 0 || ${#COMPOSER_EXCEPTIONS[@]} -gt 0 || ${#MAMBA_EXCEPTIONS[@]} -gt 0 ]]; then
             echo "Error: removal modes cannot be combined with --exception." >&2
             exit 1
         fi
@@ -439,6 +494,8 @@ result_tool_display_name() {
         hex) printf '%s\n' "Hex" ;;
         pdm) printf '%s\n' "PDM" ;;
         cargo) printf '%s\n' "Cargo" ;;
+        composer) printf '%s\n' "Composer" ;;
+        mamba) printf '%s\n' "mamba" ;;
         mise) printf '%s\n' "mise" ;;
         *) printf '%s\n' "$1" ;;
     esac
@@ -590,7 +647,7 @@ print_changed_files() {
 # Blocked tools, rollbacks, validation errors, and warnings, at the very end so
 # they are the last thing on screen. Returns 1 when a tool was blocked.
 print_needs_attention() {
-    local idx name status detail had_items=false
+    local idx status
     local name_indent
     name_indent=$(ui_text_column)
 
@@ -604,7 +661,6 @@ print_needs_attention() {
     for idx in "${!PREFLIGHT_FAILED_TOOLS[@]}"; do
         ui_status_row fail "$(result_tool_display_name "${PREFLIGHT_FAILED_TOOLS[$idx]}")" "blocked" "${PREFLIGHT_FAILED_DETAILS[$idx]}"
         ui_note "$name_indent" "Left unchanged. Upgrade it (or drop its --exception) and rerun."
-        had_items=true
     done
 
     for idx in "${!RESULT_TOOL_KEYS[@]}"; do
@@ -612,20 +668,17 @@ print_needs_attention() {
         if [[ "$status" == "FAIL" ]]; then
             ui_status_row fail "$(result_tool_display_name "${RESULT_TOOL_KEYS[$idx]}")" "failed" "${RESULT_CONFIG_DETAILS[$idx]}"
             ui_note "$name_indent" "The file was left as it was before this run."
-            had_items=true
         fi
     done
 
     for idx in "${!RESULT_TOOL_KEYS[@]}"; do
         if [[ "${RESULT_VALIDATION_STATUSES[$idx]}" == "FAIL" ]]; then
             ui_status_row fail "$(result_tool_display_name "${RESULT_TOOL_KEYS[$idx]}")" "mismatch" "${RESULT_VALIDATION_DETAILS[$idx]}"
-            had_items=true
         fi
     done
 
     for idx in "${!PREFLIGHT_WARN_TOOLS[@]}"; do
         ui_status_row warn "${PREFLIGHT_WARN_TOOLS[$idx]}" "warning" "${PREFLIGHT_WARN_DETAILS[$idx]}"
-        had_items=true
     done
 
     if [[ ${#PREFLIGHT_FAILED_TOOLS[@]} -gt 0 ]]; then
@@ -849,6 +902,8 @@ detect_supported_tool_installations() {
         "probe_tool Bundler bundle"
         "probe_hex"
         "probe_tool Cargo cargo"
+        "probe_tool Composer composer"
+        "probe_tool mamba mamba micromamba"
         "probe_tool mise mise"
         "probe_yarn"
     )
@@ -1438,6 +1493,233 @@ json_flow_array() {
     printf '%s' "$result"
 }
 
+# Minimal JSON editor for one member path ("config.policy.cooldown.period"),
+# used for Composer's config.json. It parses the whole document but edits by
+# splicing the original text, so formatting and every other member stay as they
+# were. An empty file counts as {}.
+#   get     prints the member's value in compact form (no whitespace outside strings)
+#   set     sets the member to $JSON_EDIT_VALUE, creating missing parent objects;
+#           a new member goes first in its object so no existing line changes.
+#           Lines 2+ of the value start with one tab per indent level.
+#   delete  removes the member; with prune=1 also removes parents left empty
+#           (never the root object)
+#   compact prints the whole document in compact form
+# Exit status: 0 ok, 1 member missing (get/delete; delete prints the input),
+# 2 invalid JSON, 3 a value on the path is not an object.
+json_edit() {
+    local op="$1"
+    local file="$2"
+    local path="${3:-}"
+    local prune="${4:-0}"
+
+    awk -v op="$op" -v path="$path" -v prune="$prune" '
+        function is_ws(c) { return c == " " || c == "\t" || c == "\n" || c == "\r" }
+        function skip_ws() { while (pos <= n && is_ws(substr(s, pos, 1))) pos++ }
+        function bad(code) { if (!err) err = code; return 0 }
+        function parse_string(   c) {
+            if (substr(s, pos, 1) != "\"") return bad(2)
+            pos++
+            while (pos <= n) {
+                c = substr(s, pos, 1)
+                if (c == "\\") { pos += 2; continue }
+                if (c == "\"") { pos++; return 1 }
+                if (c == "\n") return bad(2)
+                pos++
+            }
+            return bad(2)
+        }
+        function parse_literal(   start, tok) {
+            start = pos
+            while (pos <= n && substr(s, pos, 1) ~ /[A-Za-z0-9.+-]/) pos++
+            tok = substr(s, start, pos - start)
+            if (tok == "true" || tok == "false" || tok == "null") return 1
+            if (tok ~ /^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$/) return 1
+            return bad(2)
+        }
+        function parse_array(   c) {
+            pos++
+            skip_ws()
+            if (substr(s, pos, 1) == "]") { pos++; return 1 }
+            while (1) {
+                if (!parse_value(0, 0)) return 0
+                skip_ws()
+                c = substr(s, pos, 1)
+                if (c == ",") { pos++; continue }
+                if (c == "]") { pos++; return 1 }
+                return bad(2)
+            }
+        }
+        # Objects on the target path ("on") record positions by depth d.
+        function parse_object(d, on,   c, kstart, key, target, prev_end) {
+            if (on) { isobj[d] = 1; open_pos[d] = pos; count[d] = 0 }
+            pos++
+            skip_ws()
+            if (substr(s, pos, 1) == "}") { if (on) close_pos[d] = pos; pos++; return 1 }
+            prev_end = 0
+            while (1) {
+                skip_ws()
+                kstart = pos
+                if (!parse_string()) return 0
+                key = substr(s, kstart + 1, pos - kstart - 2)
+                skip_ws()
+                if (substr(s, pos, 1) != ":") return bad(2)
+                pos++
+                skip_ws()
+                target = 0
+                if (on) {
+                    count[d]++
+                    if (count[d] == 1) first_key[d] = kstart
+                    if (want_next[d]) { next_key[d] = kstart; want_next[d] = 0 }
+                    if (d < m && key == K[d + 1] && !found[d]) target = 1
+                }
+                if (target) { key_start[d] = kstart; val_start[d] = pos }
+                if (!parse_value(d + 1, target)) return 0
+                if (target) {
+                    found[d] = 1
+                    val_end[d] = pos
+                    prev_val_end[d] = prev_end
+                    want_next[d] = 1
+                }
+                prev_end = pos
+                skip_ws()
+                c = substr(s, pos, 1)
+                if (c == ",") { pos++; continue }
+                if (c == "}") { if (on) close_pos[d] = pos; pos++; return 1 }
+                return bad(2)
+            }
+        }
+        function parse_value(d, on,   c) {
+            skip_ws()
+            if (pos > n) return bad(2)
+            c = substr(s, pos, 1)
+            if (c == "{") return parse_object(d, on)
+            if (c == "[") return parse_array()
+            if (c == "\"") return parse_string()
+            return parse_literal()
+        }
+        function compact(t,   i, c, out, in_str, esc) {
+            out = ""
+            in_str = 0
+            esc = 0
+            for (i = 1; i <= length(t); i++) {
+                c = substr(t, i, 1)
+                if (in_str) {
+                    out = out c
+                    if (esc) esc = 0
+                    else if (c == "\\") esc = 1
+                    else if (c == "\"") in_str = 0
+                } else if (c == "\"") {
+                    out = out c
+                    in_str = 1
+                } else if (!is_ws(c)) {
+                    out = out c
+                }
+            }
+            return out
+        }
+        function line_start(p) { while (p > 1 && substr(s, p - 1, 1) != "\n") p--; return p }
+        function line_indent(p,   q, r) {
+            q = line_start(p)
+            r = q
+            while (r <= n && (substr(s, r, 1) == " " || substr(s, r, 1) == "\t")) r++
+            return substr(s, q, r - q)
+        }
+        function members_on_own_lines(d) {
+            return count[d] > 0 && index(substr(s, open_pos[d], first_key[d] - open_pos[d]), "\n") > 0
+        }
+        function member_indent(d,   q) {
+            if (members_on_own_lines(d)) {
+                q = line_start(first_key[d])
+                return substr(s, q, first_key[d] - q)
+            }
+            return line_indent(open_pos[d]) unit
+        }
+        function render(v, ind,   lines, k, i, out, line, t) {
+            k = split(v, lines, "\n")
+            out = lines[1]
+            for (i = 2; i <= k; i++) {
+                line = lines[i]
+                t = ""
+                while (substr(line, 1, 1) == "\t") { t = t unit; line = substr(line, 2) }
+                out = out "\n" ind t line
+            }
+            return out
+        }
+        # Wraps v in an object whose only member is K[i].
+        function nest(v, i,   lines, k, x, out) {
+            k = split(v, lines, "\n")
+            out = lines[1]
+            for (x = 2; x <= k; x++) out = out "\n\t" lines[x]
+            return "{\n\t\"" K[i] "\": " out "\n}"
+        }
+        BEGIN { m = split(path, K, ".") }
+        { s = (NR == 1 ? $0 : s "\n" $0) }
+        END {
+            n = length(s)
+            pos = 1
+            skip_ws()
+            if (pos > n) { s = "{}"; n = 2; pos = 1 }
+            if (substr(s, pos, 1) != "{") exit 2
+            if (!parse_value(0, 1)) exit err
+            skip_ws()
+            if (pos <= n) exit 2
+
+            if (op == "compact") { print compact(s); exit 0 }
+
+            unit = "    "
+            if (members_on_own_lines(0)) {
+                mi = member_indent(0)
+                li = line_indent(open_pos[0])
+                if (length(mi) > length(li) && substr(mi, 1, length(li)) == li) unit = substr(mi, length(li) + 1)
+            }
+
+            for (d = 0; d < m - 1; d++) {
+                if (!found[d]) break
+                if (!isobj[d + 1]) exit 3
+            }
+
+            if (op == "get") {
+                if (d < m - 1 || !found[m - 1]) exit 1
+                print compact(substr(s, val_start[m - 1], val_end[m - 1] - val_start[m - 1]))
+                exit 0
+            }
+
+            if (op == "delete") {
+                if (d < m - 1 || !found[m - 1]) { print s; exit 1 }
+                d = m - 1
+                if (prune == 1) while (d >= 1 && count[d] == 1) d--
+                if (count[d] == 1) out = substr(s, 1, open_pos[d]) substr(s, close_pos[d])
+                else if (prev_val_end[d]) out = substr(s, 1, prev_val_end[d] - 1) substr(s, val_end[d])
+                else {
+                    # First member: keep the separator that preceded the next
+                    # member, so {"a": 1, "b": 2} becomes {"b": 2}.
+                    p = val_end[d]
+                    while (substr(s, p, 1) != ",") p++
+                    out = substr(s, 1, open_pos[d]) substr(s, p + 1, next_key[d] - p - 1) substr(s, next_key[d])
+                }
+                print out
+                exit 0
+            }
+
+            if (op == "set") {
+                v = ENVIRON["JSON_EDIT_VALUE"]
+                if (d == m - 1 && found[d]) {
+                    print substr(s, 1, val_start[d] - 1) render(v, member_indent(d)) substr(s, val_end[d])
+                    exit 0
+                }
+                for (i = m; i > d + 1; i--) v = nest(v, i)
+                mi = member_indent(d)
+                member = "\"" K[d + 1] "\": " render(v, mi)
+                if (count[d] == 0) out = substr(s, 1, open_pos[d]) "\n" mi member "\n" line_indent(open_pos[d]) substr(s, close_pos[d])
+                else out = substr(s, 1, open_pos[d]) "\n" mi member "," substr(s, open_pos[d] + 1)
+                print out
+                exit 0
+            }
+            exit 2
+        }
+    ' "$file"
+}
+
 shell_quote() {
     local value="$1"
     value=${value//\'/\'\\\'\'}
@@ -1899,6 +2181,40 @@ run_preflight_checks() {
         record_preflight_skip "Cargo" "$installed" "$version" "$path" "not installed; config can still be written"
     fi
 
+    # Composer and mamba silently ignore the setting in older versions, so they
+    # only warn, like Cargo.
+    installed=$(lookup_detected_tool_field "Composer" installed)
+    version=$(lookup_detected_tool_field "Composer" version)
+    path=$(lookup_detected_tool_field "Composer" path)
+    if [[ "$installed" == "yes" ]]; then
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_warn "Composer" "$installed" "$version" "$path" "policy.cooldown requires version detection; config can still be written"
+        elif version_gte "$version" "2.11.0"; then
+            record_preflight_ok "Composer" "$installed" "$version" "$path" "policy.cooldown requires >= 2.11.0"
+        else
+            record_preflight_warn "Composer" "$installed" "$version" "$path" "policy.cooldown requires >= 2.11.0; config can still be written"
+        fi
+    else
+        record_preflight_skip "Composer" "$installed" "$version" "$path" "not installed; config can still be written"
+    fi
+
+    installed=$(lookup_detected_tool_field "mamba" installed)
+    version=$(lookup_detected_tool_field "mamba" version)
+    path=$(lookup_detected_tool_field "mamba" path)
+    if [[ -z "${MAMBARC:-}" && -n "${CONDARC:-}" ]]; then
+        record_preflight_warn "mamba" "$installed" "$version" "$path" "CONDARC is set, so mamba reads only that file and ignores $(ui_shorten_path "$MAMBA_CONFIG_PATH" 40); set MAMBARC=$(ui_shorten_path "$MAMBA_CONFIG_PATH" 40) or unset CONDARC"
+    elif [[ "$installed" == "yes" ]]; then
+        if [[ -z "$version" || "$version" == "unknown" ]]; then
+            record_preflight_warn "mamba" "$installed" "$version" "$path" "exclude_newer requires version detection; config can still be written"
+        elif version_gte "$version" "2.10.0"; then
+            record_preflight_ok "mamba" "$installed" "$version" "$path" "exclude_newer requires >= 2.10.0"
+        else
+            record_preflight_warn "mamba" "$installed" "$version" "$path" "exclude_newer requires >= 2.10.0; config can still be written"
+        fi
+    else
+        record_preflight_skip "mamba" "$installed" "$version" "$path" "not installed; config can still be written"
+    fi
+
     if [[ ${#MISE_EXCEPTIONS[@]} -gt 0 ]]; then
         ensure_tool_version "mise" "2026.6.2" "minimum_release_age_excludes" || status=1
     else
@@ -1930,6 +2246,8 @@ run_remove_tools() {
             hex) remove_hex ;;
             pdm) remove_pdm ;;
             cargo) remove_cargo ;;
+            composer) remove_composer ;;
+            mamba) remove_mamba ;;
             mise) remove_mise ;;
         esac
     done
@@ -2517,11 +2835,12 @@ setup_yarn_classic() {
 
 setup_yarn_berry() {
     local yarnrc_yml="$YARNRC_YML_PATH"
-    local desired_gate_line="npmMinimalAgeGate: $(yaml_quote "${MIN_AGE_DAYS}d")"
+    local desired_gate_line
     local desired_exceptions_line=""
     local current_exceptions
     local detail status current
 
+    desired_gate_line="npmMinimalAgeGate: $(yaml_quote "${MIN_AGE_DAYS}d")"
     touch "$yarnrc_yml"
     if [[ ${#YARN_EXCEPTIONS[@]} -gt 0 ]]; then
         desired_exceptions_line="npmPreapprovedPackages: $(yaml_flow_array "${YARN_EXCEPTIONS[@]}")"
@@ -3296,9 +3615,10 @@ remove_empty_cargo_registry_sections() {
 
 setup_cargo() {
     local file="$CARGO_CONFIG_PATH"
-    local age_line="global-min-publish-age = $(cargo_min_publish_age_value)"
+    local age_line
     local detail current status="added" registry
 
+    age_line="global-min-publish-age = $(cargo_min_publish_age_value)"
     detail="global-min-publish-age = ${MIN_AGE_DAYS} days$(exception_count_suffix "${#CARGO_EXCEPTIONS[@]}" "registry-exemptions")"
     ensure_file_exists "$file"
 
@@ -3831,6 +4151,386 @@ remove_hex() {
     cleanup_empty_file "$hex_conf"
 }
 
+# Composer: config.policy.cooldown in $COMPOSER_HOME/config.json (Composer 2.11.0+).
+# The script owns policy.cooldown.period. policy.cooldown.ignore is written only
+# for composer exceptions, and an ignore map is only treated as ours (and
+# removed when no exceptions are passed) when every entry carries our reason.
+COMPOSER_EXCEPTION_REASON="set-minimum-package-release-age exception"
+COMPOSER_PERIOD_PATH="config.policy.cooldown.period"
+COMPOSER_IGNORE_PATH="config.policy.cooldown.ignore"
+
+composer_period_value() {
+    printf '"%s days"\n' "$MIN_AGE_DAYS"
+}
+
+# Pretty form for json_edit set (one tab per nesting level).
+composer_ignore_value() {
+    local out="{" sep="" item
+    for item in "${COMPOSER_EXCEPTIONS[@]}"; do
+        out+="$sep"$'\n\t'"$(json_quote "$item"): $(json_quote "$COMPOSER_EXCEPTION_REASON")"
+        sep=","
+    done
+    printf '%s\n}\n' "$out"
+}
+
+composer_ignore_compact() {
+    local out="{" sep="" item
+    for item in "${COMPOSER_EXCEPTIONS[@]}"; do
+        out+="$sep$(json_quote "$item"):$(json_quote "$COMPOSER_EXCEPTION_REASON")"
+        sep=","
+    done
+    printf '%s}\n' "$out"
+}
+
+composer_ignore_is_managed() {
+    local compact="$1"
+    local entry="\"([^\"\\\\]|\\\\.)*\":\"${COMPOSER_EXCEPTION_REASON}\""
+    local pattern="^[{]${entry}(,${entry})*[}]$"
+    [[ "$compact" =~ $pattern ]]
+}
+
+composer_json_get() {
+    json_edit get "$1" "$2" 2>/dev/null || true
+}
+
+# Runs json_edit and replaces the file only when it succeeds. Returns json_edit's
+# status; a missing member on delete (1) leaves the file unchanged and succeeds.
+json_edit_in_place() {
+    local op="$1" file="$2" path="$3" prune="${4:-0}" tmp status=0
+
+    tmp=$(mktemp)
+    json_edit "$op" "$file" "$path" "$prune" > "$tmp" || status=$?
+    if [[ $status -eq 0 ]]; then
+        mv "$tmp" "$file"
+        return 0
+    fi
+    rm -f "$tmp"
+    if [[ "$op" == "delete" && $status -eq 1 ]]; then
+        return 0
+    fi
+    return "$status"
+}
+
+# Compact form of a Composer config with the managed members and any objects
+# they leave empty removed, used to prove that nothing else changed.
+composer_unmanaged_view() {
+    local file="$1" tmp parent
+
+    tmp=$(mktemp)
+    cp "$file" "$tmp"
+    json_edit_in_place delete "$tmp" "$COMPOSER_PERIOD_PATH" || true
+    json_edit_in_place delete "$tmp" "$COMPOSER_IGNORE_PATH" || true
+    for parent in config.policy.cooldown config.policy config; do
+        if [[ "$(composer_json_get "$tmp" "$parent")" == "{}" ]]; then
+            json_edit_in_place delete "$tmp" "$parent" || true
+        fi
+    done
+    json_edit compact "$tmp" 2>/dev/null || true
+    rm -f "$tmp"
+}
+
+# JSON counterpart of verify_and_finalize: compares documents instead of lines,
+# because adding or removing a member can move a comma onto a neighboring line.
+composer_verify_and_finalize() {
+    local file="$1"
+    local backup="${file}${BACKUP_SUFFIX}"
+
+    if [[ -f "$backup" ]]; then
+        if [[ "$(composer_unmanaged_view "$backup")" != "$(composer_unmanaged_view "$file")" ]]; then
+            ui_init
+            ui_note 6 "Unexpected changes in $(ui_shorten_path "$file" 60); the backup was restored." "$UI_C_RED"
+            cp "$backup" "$file"
+            rm -f "$backup"
+            FAILED_TOOLS+=("composer")
+            return 1
+        fi
+        rm -f "$backup"
+    fi
+    UPDATED_TOOLS+=("composer")
+    return 0
+}
+
+# Prints "invalid" or "not-object" when the config cannot be edited safely.
+composer_config_problem() {
+    local file="$1" status=0
+
+    [[ -f "$file" ]] || return 0
+    json_edit get "$file" "$COMPOSER_PERIOD_PATH" >/dev/null 2>&1 || status=$?
+    case "$status" in
+        2) printf 'invalid\n' ;;
+        3) printf 'not-object\n' ;;
+    esac
+}
+
+composer_problem_detail() {
+    case "$1" in
+        invalid) printf '%s is not valid JSON; left unchanged\n' "$(basename "$COMPOSER_CONFIG_PATH")" ;;
+        *) printf 'config.policy or its cooldown is not an object (for example false); left unchanged\n' ;;
+    esac
+}
+
+setup_composer() {
+    local file="$COMPOSER_CONFIG_PATH"
+    local desired_period current_period current_ignore desired_ignore=""
+    local detail status="added" problem tmp ignore_ok=false edit_ok=true
+
+    desired_period=$(composer_period_value)
+    detail="policy.cooldown.period = ${MIN_AGE_DAYS} days$(exception_count_suffix "${#COMPOSER_EXCEPTIONS[@]}" "exceptions")"
+
+    problem=$(composer_config_problem "$file")
+    if [[ -n "$problem" ]]; then
+        emit_config_status "Composer" "composer" "FAIL" "$(composer_problem_detail "$problem")"
+        FAILED_TOOLS+=("composer")
+        return 0
+    fi
+
+    current_period=""
+    current_ignore=""
+    if [[ -f "$file" ]]; then
+        current_period=$(composer_json_get "$file" "$COMPOSER_PERIOD_PATH")
+        current_ignore=$(composer_json_get "$file" "$COMPOSER_IGNORE_PATH")
+    fi
+    if [[ ${#COMPOSER_EXCEPTIONS[@]} -gt 0 ]]; then
+        desired_ignore=$(composer_ignore_compact)
+        [[ "$current_ignore" == "$desired_ignore" ]] && ignore_ok=true
+    elif [[ -z "$current_ignore" ]] || ! composer_ignore_is_managed "$current_ignore"; then
+        ignore_ok=true
+    fi
+
+    if [[ "$current_period" == "$desired_period" && "$ignore_ok" == true ]]; then
+        emit_config_status "Composer" "composer" "ok" "$detail"
+        SKIPPED_TOOLS+=("composer")
+        return 0
+    fi
+
+    if [[ -n "$current_period" ]]; then
+        status="updated"
+        current_period=${current_period#\"}
+        current_period=${current_period%\"}
+        detail=$(format_change_detail "$current_period" "${MIN_AGE_DAYS} days" "$detail")
+    fi
+
+    # Build the result in a temp file first, so a failed edit changes nothing.
+    tmp=$(mktemp)
+    if [[ -f "$file" ]]; then
+        cp "$file" "$tmp"
+    fi
+    JSON_EDIT_VALUE="$desired_period" json_edit_in_place set "$tmp" "$COMPOSER_PERIOD_PATH" || edit_ok=false
+    if [[ "$edit_ok" == true && -n "$desired_ignore" ]]; then
+        JSON_EDIT_VALUE="$(composer_ignore_value)" json_edit_in_place set "$tmp" "$COMPOSER_IGNORE_PATH" || edit_ok=false
+    elif [[ "$edit_ok" == true && -n "$current_ignore" ]] && composer_ignore_is_managed "$current_ignore"; then
+        json_edit_in_place delete "$tmp" "$COMPOSER_IGNORE_PATH" 1 || edit_ok=false
+    fi
+    if [[ "$edit_ok" != true ]]; then
+        rm -f "$tmp"
+        emit_config_status "Composer" "composer" "FAIL" "$detail"
+        FAILED_TOOLS+=("composer")
+        return 0
+    fi
+
+    mkdir -p "$(dirname "$file")"
+    backup_if_exists "$file"
+    cat "$tmp" > "$file"
+    rm -f "$tmp"
+
+    if composer_verify_and_finalize "$file"; then
+        emit_config_status "Composer" "composer" "$status" "$detail"
+    else
+        emit_config_status "Composer" "composer" "FAIL" "$detail"
+    fi
+}
+
+remove_composer() {
+    local file="$COMPOSER_CONFIG_PATH"
+    local current_period current_ignore remove_ignore=false
+
+    if [[ -f "$file" && "$(composer_config_problem "$file")" == "invalid" ]]; then
+        emit_config_status "Composer" "composer" "FAIL" "$(composer_problem_detail invalid)"
+        FAILED_TOOLS+=("composer")
+        return 0
+    fi
+    if [[ ! -f "$file" || -n "$(composer_config_problem "$file")" ]]; then
+        emit_config_status "Composer" "composer" "ok" "cooldown not present"
+        SKIPPED_TOOLS+=("composer")
+        return 0
+    fi
+
+    current_period=$(composer_json_get "$file" "$COMPOSER_PERIOD_PATH")
+    current_ignore=$(composer_json_get "$file" "$COMPOSER_IGNORE_PATH")
+    if [[ -n "$current_ignore" ]] && composer_ignore_is_managed "$current_ignore"; then
+        remove_ignore=true
+    fi
+    current_period=${current_period#\"}
+    current_period=${current_period%\"}
+    if [[ -z "$current_period" && "$remove_ignore" != true ]]; then
+        emit_config_status "Composer" "composer" "ok" "cooldown not present"
+        SKIPPED_TOOLS+=("composer")
+        return 0
+    fi
+
+    backup_if_exists "$file"
+    json_edit_in_place delete "$file" "$COMPOSER_PERIOD_PATH" 1 || true
+    if [[ "$remove_ignore" == true ]]; then
+        json_edit_in_place delete "$file" "$COMPOSER_IGNORE_PATH" 1 || true
+    fi
+
+    if composer_verify_and_finalize "$file"; then
+        emit_config_status "Composer" "composer" "removed" "policy.cooldown.period = ${current_period:-not set}"
+    else
+        emit_config_status "Composer" "composer" "FAIL" "policy.cooldown.period"
+    fi
+    if [[ "$(json_edit compact "$file" 2>/dev/null || true)" == "{}" ]]; then
+        rm -f "$file"
+    fi
+}
+
+validate_composer() {
+    local file="$COMPOSER_CONFIG_PATH" current_ignore ignore_ok=false
+
+    if [[ ! -f "$file" ]]; then
+        record_validation_skip "Composer" "config not present" "composer"
+        return 0
+    fi
+
+    current_ignore=$(composer_json_get "$file" "$COMPOSER_IGNORE_PATH")
+    if [[ ${#COMPOSER_EXCEPTIONS[@]} -gt 0 ]]; then
+        [[ "$current_ignore" == "$(composer_ignore_compact)" ]] && ignore_ok=true
+    elif [[ -z "$current_ignore" ]] || ! composer_ignore_is_managed "$current_ignore"; then
+        ignore_ok=true
+    fi
+
+    if [[ "$(composer_json_get "$file" "$COMPOSER_PERIOD_PATH")" == "$(composer_period_value)" && "$ignore_ok" == true ]]; then
+        record_validation_ok "Composer" "policy.cooldown matches" "composer"
+    else
+        record_validation_fail "Composer" "policy.cooldown settings do not match" "composer"
+    fi
+}
+
+# mamba / micromamba: exclude_newer in ~/.mambarc (2.10.0+). Exemptions go on one
+# exclude_newer_package line that carries a marker comment; only a marked line
+# is managed, so a hand-written exclude_newer_package is left alone.
+MAMBA_EXCEPTION_MARKER="# set-minimum-package-release-age exception"
+
+mamba_age_line() {
+    printf 'exclude_newer: %sd\n' "$MIN_AGE_DAYS"
+}
+
+mamba_exceptions_line() {
+    local body="" sep="" item
+    for item in "${MAMBA_EXCEPTIONS[@]}"; do
+        body+="$sep$(json_quote "$item"): false"
+        sep=", "
+    done
+    printf 'exclude_newer_package: {%s}  %s\n' "$body" "$MAMBA_EXCEPTION_MARKER"
+}
+
+mamba_marked_exceptions_present() {
+    grep -Fq "$MAMBA_EXCEPTION_MARKER" "$1" 2>/dev/null
+}
+
+setup_mamba() {
+    local file="$MAMBA_CONFIG_PATH"
+    local age_line desired_exceptions="" current_exceptions
+    local detail status="added" current
+
+    age_line=$(mamba_age_line)
+    detail="exclude_newer = ${MIN_AGE_DAYS}d$(exception_count_suffix "${#MAMBA_EXCEPTIONS[@]}" "exceptions")"
+    ensure_file_exists "$file"
+
+    # A block value spans several lines; rewriting only its first line would
+    # corrupt the file, so leave it to the user.
+    if grep -Eq '^exclude_newer:[[:space:]]*(#.*)?$' "$file" 2>/dev/null; then
+        emit_config_status "mamba" "mamba" "FAIL" "multi-line exclude_newer in $(basename "$file"); edit it by hand"
+        FAILED_TOOLS+=("mamba")
+        return 0
+    fi
+    current_exceptions=$(current_lines_or_empty "$file" '^exclude_newer_package:')
+    if [[ ${#MAMBA_EXCEPTIONS[@]} -gt 0 ]]; then
+        desired_exceptions=$(mamba_exceptions_line)
+        if [[ -n "$current_exceptions" && "$current_exceptions" != *"}"* ]]; then
+            emit_config_status "mamba" "mamba" "FAIL" "multi-line exclude_newer_package in $(basename "$file"); edit it by hand"
+            FAILED_TOOLS+=("mamba")
+            return 0
+        fi
+    elif [[ "$current_exceptions" != *"$MAMBA_EXCEPTION_MARKER"* ]]; then
+        # Not ours: keep it and do not compare it.
+        desired_exceptions="$current_exceptions"
+    fi
+
+    if grep -Fqx "$age_line" "$file" 2>/dev/null && [[ "$current_exceptions" == "$desired_exceptions" ]]; then
+        emit_config_status "mamba" "mamba" "ok" "$detail"
+        SKIPPED_TOOLS+=("mamba")
+        return 0
+    fi
+
+    backup_if_exists "$file"
+    if grep -q '^exclude_newer:' "$file" 2>/dev/null; then
+        current=$(grep '^exclude_newer:' "$file" | sed -n 1p | sed 's/^exclude_newer:[[:space:]]*//; s/[[:space:]]*#.*$//')
+        status="updated"
+        detail=$(format_change_detail "$current" "${MIN_AGE_DAYS}d" "$detail")
+    fi
+
+    replace_or_append_line "$file" '^exclude_newer:' "$age_line"
+    if [[ ${#MAMBA_EXCEPTIONS[@]} -gt 0 ]]; then
+        replace_or_append_line "$file" '^exclude_newer_package:' "$desired_exceptions"
+    elif [[ "$current_exceptions" == *"$MAMBA_EXCEPTION_MARKER"* ]]; then
+        remove_matching_lines "$file" '^exclude_newer_package:'
+    fi
+
+    if verify_and_finalize "$file" "mamba" '^exclude_newer'; then
+        emit_config_status "mamba" "mamba" "$status" "$detail"
+    else
+        emit_config_status "mamba" "mamba" "FAIL" "$detail"
+    fi
+}
+
+remove_mamba() {
+    local file="$MAMBA_CONFIG_PATH" current
+
+    if ! grep -q '^exclude_newer:[[:space:]]*[^[:space:]#]' "$file" 2>/dev/null \
+        && ! mamba_marked_exceptions_present "$file"; then
+        emit_config_status "mamba" "mamba" "ok" "exclude_newer not present"
+        SKIPPED_TOOLS+=("mamba")
+        return 0
+    fi
+
+    current=$(grep '^exclude_newer:' "$file" 2>/dev/null | sed -n 1p | sed 's/^exclude_newer:[[:space:]]*//; s/[[:space:]]*#.*$//' || true)
+    backup_if_exists "$file"
+    remove_matching_lines "$file" '^exclude_newer:[[:space:]]*[^[:space:]#]'
+    if mamba_marked_exceptions_present "$file"; then
+        remove_matching_lines "$file" "^exclude_newer_package:.*${MAMBA_EXCEPTION_MARKER}"
+    fi
+
+    strip_file_if_whitespace_only "$file"
+    if verify_and_finalize "$file" "mamba" '^exclude_newer'; then
+        emit_config_status "mamba" "mamba" "removed" "exclude_newer = ${current:-not set}"
+    else
+        emit_config_status "mamba" "mamba" "FAIL" "exclude_newer"
+    fi
+    cleanup_empty_file "$file"
+}
+
+validate_mamba() {
+    local file="$MAMBA_CONFIG_PATH" exceptions_ok=false
+
+    if [[ ! -f "$file" ]]; then
+        record_validation_skip "mamba" "config not present" "mamba"
+        return 0
+    fi
+
+    if [[ ${#MAMBA_EXCEPTIONS[@]} -gt 0 ]]; then
+        grep -Fqx "$(mamba_exceptions_line)" "$file" 2>/dev/null && exceptions_ok=true
+    elif ! mamba_marked_exceptions_present "$file"; then
+        exceptions_ok=true
+    fi
+
+    if grep -Fqx "$(mamba_age_line)" "$file" 2>/dev/null && [[ "$exceptions_ok" == true ]]; then
+        record_validation_ok "mamba" "exclude_newer matches" "mamba"
+    else
+        record_validation_fail "mamba" "exclude_newer settings do not match" "mamba"
+    fi
+}
+
 validate_configs() {
     load_tool_detection_cache
     local pip_conf="$PIP_CONFIG_PATH"
@@ -3843,14 +4543,12 @@ validate_configs() {
     local yarnrc_yml="$YARNRC_YML_PATH"
     local bundler_conf="$BUNDLER_CONFIG_PATH"
     local hex_conf="$HEX_CONFIG_PATH"
-    local expected_vlt_before="\"before\": \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
-    local expected_pip_line="uploaded-prior-to = $(pip_uploaded_prior_to_value)"
+    local expected_vlt_before expected_pip_line expected_yarn_v2_age
     local expected_uv_date="exclude-newer = \"P${MIN_AGE_DAYS}D\""
     local expected_poetry_age="min-release-age = ${MIN_AGE_DAYS}"
     local expected_pnpm_age="minimum-release-age=$(( MIN_AGE_DAYS * 1440 ))"
     local expected_bun_age="minimumReleaseAge = $(( MIN_AGE_DAYS * 86400 ))"
     local expected_yarn_v1_age="cache-min $(( MIN_AGE_DAYS * 86400 ))"
-    local expected_yarn_v2_age="npmMinimalAgeGate: $(yaml_quote "${MIN_AGE_DAYS}d")"
     local expected_bundler_age="BUNDLE_COOLDOWN: \"${MIN_AGE_DAYS}\""
     local expected_hex_age="{cooldown,<<\"${MIN_AGE_DAYS}d\">>}."
     local expected_uv_exceptions=""
@@ -3861,6 +4559,10 @@ validate_configs() {
     local expected_yarn_exceptions=""
     local expected_pnpm_exceptions=""
     local current_exceptions current_source_exceptions item
+
+    expected_vlt_before="\"before\": \"$(date_days_ago_rfc3339 "$MIN_AGE_DAYS")\""
+    expected_pip_line="uploaded-prior-to = $(pip_uploaded_prior_to_value)"
+    expected_yarn_v2_age="npmMinimalAgeGate: $(yaml_quote "${MIN_AGE_DAYS}d")"
 
     pnpm_config=$(pnpm_active_config_path)
 
@@ -4060,6 +4762,8 @@ validate_new_toml_tools() {
     else
         validate_toml_section_age "Cargo" "cargo" "$CARGO_CONFIG_PATH" "global-min-publish-age = $(cargo_min_publish_age_value)"
     fi
+    validate_composer
+    validate_mamba
     validate_toml_section_age "mise" "mise" "$MISE_CONFIG_PATH" "minimum_release_age = $(mise_minimum_release_age_value)" \
         "minimum_release_age_excludes" "$mise_list"
 }
@@ -4231,6 +4935,8 @@ main() {
     run_progress_step bundler config setup_bundler
     run_progress_step hex config setup_hex
     run_progress_step cargo config setup_cargo
+    run_progress_step composer config setup_composer
+    run_progress_step mamba config setup_mamba
     run_progress_step mise config setup_mise
 
     validate_configs

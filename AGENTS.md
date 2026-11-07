@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository contains Bash scripts that configure a minimum package release age across Python, JavaScript, Ruby, Elixir/Erlang, and Rust package managers, plus the mise tool manager, as a supply-chain mitigation.
+This repository contains Bash scripts that configure a minimum package release age across Python, conda, JavaScript, Ruby, Elixir/Erlang, Rust, and PHP package managers, plus the mise tool manager, as a supply-chain mitigation.
 
 Supported tools:
 
@@ -21,9 +21,11 @@ Supported tools:
 - `Bundler`
 - `Hex`
 - `Cargo`
+- `Composer` (`config.policy.cooldown` in `$COMPOSER_HOME/config.json`, Composer 2.11.0+)
+- `mamba` / `micromamba` (`exclude_newer` in `~/.mambarc` or `$MAMBARC`, 2.10.0+)
 - `mise`
 
-The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `Poetry`, `npm`, `pnpm`, `bun`, Yarn Berry, `mise`, `pixi` (package exemptions in the global manifest), Hex (repository exclusions via `cooldown_exclude_repos`), and Cargo (registry exemptions via `[registries.<name>] min-publish-age = "0"`). pip, PDM, Deno, vlt, Yarn Classic, and Bundler have no user-level exclusion setting (PDM and Deno only accept them in project files). Hex `cooldown_exclude_repos` is only managed when `hex` exceptions are passed; otherwise it is preserved. Cargo exemption lines carry a `# set-minimum-package-release-age exception` marker, and only marked lines are managed.
+The default age is 7 days. `--remove` removes managed settings. Repeatable exception flags exist for `uv`, `Poetry`, `npm`, `pnpm`, `bun`, Yarn Berry, `mise`, `pixi` (package exemptions in the global manifest), Hex (repository exclusions via `cooldown_exclude_repos`), Cargo (registry exemptions via `[registries.<name>] min-publish-age = "0"`), Composer (`policy.cooldown.ignore`), and mamba (`exclude_newer_package`). pip, PDM, Deno, vlt, Yarn Classic, and Bundler have no user-level exclusion setting (PDM and Deno only accept them in project files). Hex `cooldown_exclude_repos` is only managed when `hex` exceptions are passed; otherwise it is preserved. Cargo exemption lines carry a `# set-minimum-package-release-age exception` marker, and only marked lines are managed; the mamba `exclude_newer_package` line uses the same marker. Composer `ignore` entries carry the reason `set-minimum-package-release-age exception`, and an `ignore` map is only treated as managed when every entry has it.
 
 ## Architecture
 
@@ -36,6 +38,7 @@ The repo uses a shared core plus thin wrappers:
   - shared `usage`, `parse_args`, config path resolution, helper functions, per-tool `setup_*` / `remove_*`, `validate_configs`, and `main`
   - `ALL_TOOL_KEYS` is the single ordered tool list used for the results table and full removal
   - `setup_toml_section_age` / `remove_toml_section_age` / `validate_toml_section_age` cover tools whose managed state is one line (plus an optional list) in one TOML section (PDM, Cargo, mise)
+  - `json_edit` is a small awk JSON editor (get / set / delete with pruning / compact) for Composer's `config.json`; it splices the original text so formatting and unrelated members survive. Composer changes are verified semantically (`composer_unmanaged_view`) instead of by line diff, because adding or removing a member can move a comma onto a neighboring line
   - the vlt refresh scheduler: `cron` backend (Linux) or `launchd` backend (macOS), selected by `VLT_REFRESH_SCHEDULER`
 - `set_package_min_age_linux.sh`
   - Linux wrapper with the GNU `date` adapter and vlt cron line builder; Linux paths all come from the shared XDG-aware defaults
@@ -62,11 +65,13 @@ Validation is config-based for every supported tool. `validate_configs()` checks
 - `Bundler`
 - `Hex` (including `cooldown_exclude_repos` when `hex` exceptions are passed)
 - `Cargo` (including the marked registry exemption lines)
+- `Composer` (`policy.cooldown.period`, plus the managed `ignore` map)
+- `mamba` (`exclude_newer`, plus the marked `exclude_newer_package` line)
 - `mise`
 
 Tools blocked by a failed version check are reported as `blocked` instead of being validated.
 
-This is intentional: it avoids relying on inconsistent CLI config getters and ensures every managed config file, including `bun`, the Deno wrapper, the pixi global manifest, Poetry, PDM, Bundler, Hex, Cargo, and mise, is validated.
+This is intentional: it avoids relying on inconsistent CLI config getters and ensures every managed config file, including `bun`, the Deno wrapper, the pixi global manifest, Poetry, PDM, Bundler, Hex, Cargo, Composer, mamba, and mise, is validated.
 
 ## Package Manager Policy
 
@@ -92,6 +97,15 @@ If dependencies are added later:
 - Record major dependency version bumps under `Known Issues / TODOs` for manual review.
 
 ## Last Dependency Update
+
+2026-11-07: Added Composer and mamba/micromamba, whose revisit triggers were met (#4, #5), verified against real binaries in Docker (Composer 2.11.1, micromamba 2.10.0, mamba 2.10.0 from conda-forge build 3, micromamba 2.9.0). No dependency-managed ecosystems exist, so no packages were updated. Details:
+- Composer 2.11.0 (stable 2026-10-29) honors `config.policy.cooldown.period` and `ignore` in the global `config.json`; the global policy deep-merges with a project's `config.policy`, and changing it does not mark `composer.lock` outdated. Composer's home is `COMPOSER_HOME`, else the first existing of `$XDG_CONFIG_HOME/composer` (only when an `XDG_*` variable is set or `/etc/xdg` exists) and `~/.composer`, else the first candidate; `composer_home_dir` matches real Composer in all cases tested.
+- mamba and micromamba 2.10.0 honor `exclude_newer: 7d` and a flow-mapping `exclude_newer_package` line with a trailing comment in `~/.mambarc`; 2.9.0 silently ignores both. `MAMBARC` or `CONDARC` replaces every default rc file (libmamba `rc_files`), and with both set `MAMBARC` wins.
+- CI gained a shellcheck job (`just lint`) and `actions/checkout` moved from v4 to v7. Removed dead code that shellcheck flagged and split `local x=$(cmd)` assignments that hid command failures.
+- Tests: `setup_test_env` now unsets every derived config path and all `XDG_*` variables, because re-sourcing the library in one shell kept the previous test's `HOME`-based paths.
+Re-checked without changes: RubyGems 4.1 is still beta (#9), aube 2.9.0 has no fix for the cold-cache bug (#7), vltpkg/vltpkg#1503 and yarnpkg/berry#7192 are still open, Deno 2.9.8 has no user-level setting, Hex 2.7.0 kept `cooldown` / `cooldown_exclude_repos`.
+
+Recorded package changes: none recorded.
 
 2026-10-24: Package-manager re-verification against upstream source, docs, and real binaries (pip 26.2.1, uv 0.13.5, npm 11.13.0, pnpm 12.15.0, bun 1.4.3, Bundler, Cargo 1.96 run against a temporary `HOME`). No dependency-managed ecosystems exist, so no packages were updated. Fixes:
 - Config paths now follow each tool's own overrides. uv, bun, pnpm, vlt, and mise use `$XDG_CONFIG_HOME` on every platform and then ignore their default file, so the old hardcoded paths were silently ineffective there. pip on macOS reads only one user file (`$XDG_DATA_HOME/pip`, then `~/Library/Application Support/pip` if either directory exists, else `~/.config/pip`). Also honored: `POETRY_CONFIG_DIR`, `PDM_CONFIG_FILE`, `NPM_CONFIG_USERCONFIG`, `BUNDLE_USER_CONFIG` / `BUNDLE_USER_HOME`, `CARGO_HOME`, `MISE_*`, `PIXI_HOME`, and `ZDOTDIR`.
@@ -168,6 +182,9 @@ Recorded package changes: none recorded.
 - Never reintroduce a pixi CLI-flag wrapper; pixi workspace commands do not accept `--exclude-newer`. Only edit an existing pixi global manifest, and only on pixi 0.82.0+.
 - Config paths must follow the same environment overrides the tool honors (`XDG_CONFIG_HOME` and tool-specific variables); writing a file the tool ignores while validation reports `ok` is a silent failure.
 - Cargo cooldown should remain documented as requiring Cargo `1.100+`; older Cargo warns rather than blocks because it ignores the key.
+- Composer cooldown should remain documented as requiring Composer `2.11.0+` and mamba `exclude_newer` as requiring mamba/micromamba `2.10.0+`; older versions warn rather than block because they ignore the setting.
+- Never write `exclude_newer` to `~/.condarc` (or `$CONDARC`): conda reads it too and its solvers fail on the key (#6). With only `CONDARC` set, warn instead.
+- Edit Composer's `config.json` only through `json_edit`; it must stay compatible with mawk, BusyBox awk, gawk, and BSD awk, and an unparsable file or a non-object `policy`/`cooldown` must be left untouched.
 - Verify upstream claims against real binaries where possible (temporary `HOME`, and a `crontab` shim first on `PATH` so the real crontab is untouched); the test suite only uses fake binaries.
 - If a behavior exists in the shared core, test it there instead of duplicating logic in both wrappers.
 
@@ -185,6 +202,7 @@ Preferred shortcuts:
 
 ```bash
 just syntax-check
+just lint    # shellcheck -S warning on lib/ and the wrappers (must stay clean; CI enforces it)
 just test
 just check
 ```
@@ -202,7 +220,7 @@ Linux check from macOS (each distro's userland differs: mawk, gawk without `whic
 docker run --rm -v "$PWD:/repo:ro" alpine:latest sh -c 'apk add -q bash zsh && cp -R /repo /work && cd /work && bash tests/run.sh'
 ```
 
-CI: `.github/workflows/test.yml` (Ubuntu, macOS with bash 5 and 3.2, Fedora, Alpine, Debian).
+CI: `.github/workflows/test.yml` (shellcheck, Ubuntu, macOS with bash 5 and 3.2, Fedora, Alpine, Debian).
 
 ## Test Layout
 
@@ -228,10 +246,10 @@ The tests use a temporary `HOME`, fake manager binaries, and fake `crontab` and 
 - GitHub #2: vlt (1.6.0) still only accepts an absolute `before` date, so it is the one tool that needs a scheduled refresh (launchd on macOS, cron on Linux). Never write a relative value: `@vltpkg/pick-manifest` parses it with `new Date(before)`, so `7d`/`P7D` becomes an invalid date and every version is rejected. Watch vltpkg/vltpkg#1503 (relative publish-date filter request, open) and drop the scheduler once a relative setting ships. The uv cron is already gone; only legacy-entry cleanup remains.
 - GitHub #3: Deno has no user-level minimum dependency age setting, so the shell wrapper remains; replace it once Deno ships one.
 - Yarn Berry 4.17+ upstream bug (yarnpkg/berry#7192): `npmScopes` entries without their own gate use the `1d` default, not the global `npmMinimalAgeGate`.
-- Unsupported package managers each have a GitHub issue with the reason and the trigger for adding support (#4–#22): Composer #4, mamba/micromamba #5, conda #6, aube #7, NuGet #8, RubyGems `gem` #9, Go #11, Maven #12, Gradle #13, Homebrew #14, Dart pub #15, Julia Pkg #16, Swift PM #17, CocoaPods #18, CPAN #19, Nix #20, aqua #21, asdf #22. Keep the README "Not Yet Supported" table in sync when one is added or closed. pipx (#10) was closed as covered by the pip/uv config.
+- Unsupported package managers each have a GitHub issue with the reason and the trigger for adding support (#6–#22): conda #6, aube #7, NuGet #8, RubyGems `gem` #9, Go #11, Maven #12, Gradle #13, Homebrew #14, Dart pub #15, Julia Pkg #16, Swift PM #17, CocoaPods #18, CPAN #19, Nix #20, aqua #21, asdf #22. Keep the README "Not Yet Supported" table in sync when one is added or closed. pipx (#10) was closed as covered by the pip/uv config, and Composer (#4) and mamba/micromamba (#5) were closed when support was added.
 - Findings from real-binary checks (2026-10-24) are in the issues:
   - Composer 2.11 needs the string `"7 days"` (a bare integer means seconds), and 2.10 silently ignores the setting.
-  - mamba has no installable 2.10 build yet, and older versions silently ignore the setting.
+  - mamba/micromamba before 2.10 silently ignore the setting, and conda-forge channels publish no `indexed_timestamp`, so the cutoff uses build timestamps.
   - conda's libmamba and rattler solvers hard-fail with it.
   - aube's user config needs 1.9.0+, but 2.8.2 ignores the gate on a cold cache.
   - RubyGems 4.1 beta reads `BUNDLE_COOLDOWN`.

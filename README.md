@@ -1,6 +1,6 @@
 # Set Minimum Package Release Age
 
-Bash scripts that configure a minimum package release age across Python, JavaScript, Ruby, Elixir/Erlang, and Rust package managers, plus the mise tool manager. The default is 7 days, configurable via CLI argument. This helps reduce supply-chain risk by preferring package versions that have been published long enough to be noticed and pulled if they are malicious.
+Bash scripts that configure a minimum package release age across Python, conda, JavaScript, Ruby, Elixir/Erlang, Rust, and PHP package managers, plus the mise tool manager. The default is 7 days, configurable via CLI argument. This helps reduce supply-chain risk by preferring package versions that have been published long enough to be noticed and pulled if they are malicious.
 
 The repo uses a shared core library plus thin platform wrappers:
 
@@ -25,6 +25,7 @@ The repo uses a shared core library plus thin platform wrappers:
 | Python | `Poetry` | native age gate + package/source exceptions | `~/.config/pypoetry/config.toml` (Linux) / `~/Library/Application Support/pypoetry/config.toml` (macOS) |
 | Python | `PDM` | native relative `exclude-newer` | `~/.config/pdm/config.toml` (Linux) / `~/Library/Application Support/pdm/config.toml` (macOS) |
 | Python | `pixi` | native `exclude-newer` + package exemptions, in the `pixi global` manifest only | the existing `pixi-global.toml` (`~/.pixi/manifests/` by default) |
+| conda | `mamba` / `micromamba` | native relative `exclude_newer` + package exemptions | `~/.mambarc` (or `$MAMBARC`) |
 | JavaScript | `npm` | native age gate + package/glob excludes | `~/.npmrc` |
 | JavaScript | `pnpm` | native age gate + selectors to exclude | pnpm 11+: `config.yaml`; pnpm 10: legacy `rc` (`$XDG_CONFIG_HOME/pnpm/`, else `~/.config/pnpm/` on Linux and `~/Library/Preferences/pnpm/` on macOS) |
 | JavaScript | `bun` | native age gate + package excludes | `$XDG_CONFIG_HOME/.bunfig.toml` when set, else `~/.bunfig.toml` |
@@ -35,6 +36,7 @@ The repo uses a shared core library plus thin platform wrappers:
 | Ruby | `Bundler` | native cooldown | `~/.bundle/config` |
 | Elixir / Erlang | `Hex` | native cooldown + repository exclusions | `~/.hex/hex.config` (or the `HEX_HOME` / `MIX_XDG` location) |
 | Rust | `Cargo` | native `registry.global-min-publish-age` + registry exemptions | `$CARGO_HOME/config.toml` (default `~/.cargo/config.toml`) |
+| PHP | `Composer` | native `policy.cooldown` + package exemptions | `$COMPOSER_HOME/config.json` (default `~/.composer/config.json`, or `~/.config/composer/` on XDG systems) |
 | Tool manager | `mise` | native `minimum_release_age` + tool/backend excludes | `~/.config/mise/config.toml` |
 
 ## Feature Matrix
@@ -56,6 +58,8 @@ The repo uses a shared core library plus thin platform wrappers:
 | `Bundler` | yes | no | no | yes | warning |
 | `Hex` | yes | yes (repository exclusions) | no | yes | yes |
 | `Cargo` | yes | yes (registry exemptions) | no | yes | warning |
+| `Composer` | yes | yes (package exemptions) | no | yes | warning |
+| `mamba` / `micromamba` | yes | yes (package exemptions) | no | yes | warning |
 | `mise` | yes | yes | no | yes | yes |
 
 ## Version Notes
@@ -77,6 +81,8 @@ The repo uses a shared core library plus thin platform wrappers:
 - Deno `--minimum-dependency-age` requires Deno `2.6.0+` for `install`, `update`, `outdated`, and `cache`. `deno add` / `deno remove` only accept it from Deno `2.9.4`; the wrapper checks the installed version at run time and passes those commands through unchanged on older Deno. Deno `2.8+` also reads `min-release-age` from `.npmrc` and `2.9+` defaults to 24 hours, but a project `deno.json` outranks both, so the wrapper stays.
 - Hex `cooldown` requires Hex `2.5.0+`. It applies during fresh dependency resolution, not when installing an unchanged lockfile. Repository-wide exclusions (`cooldown_exclude_repos`) are written with `--exception hex:REPOSITORY`.
 - Cargo `registry.global-min-publish-age` is stable from Cargo/Rust `1.100` (scheduled for 2026-11-12). Older Cargo ignores the key, so older versions warn and the config is still written for the upgrade. Locked versions are kept and `cargo install` is not affected.
+- Composer `policy.cooldown` requires Composer `2.11.0+` (stable since 2026-10-29). Composer 2.10 silently ignores it, so older versions warn and the config is still written for the upgrade. It applies to `composer update` / `require` (and the version `require`, `init`, and `create-project` pick), not to `composer install` from an unchanged `composer.lock`. The period is written as `"7 days"`; a bare number would mean seconds. A project's own `config.policy` is merged with it, and `COMPOSER_POLICY_COOLDOWN_PERIOD` or `--no-cooldown` overrides it for one run.
+- mamba and micromamba `exclude_newer` require `2.10.0+` (conda-forge builds from 2026-10-25 on; the first 2.10.0 build is marked broken). Older versions silently ignore it, so they warn and the config is still written for the upgrade. It is written to `~/.mambarc`, never `~/.condarc`, because conda also reads `~/.condarc` and fails on the key ([#6](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/6)). Channels do not publish an upload time yet, so the cutoff uses each package's build timestamp. The `MAMBA_EXCLUDE_NEWER` variable and `--exclude-newer` flag override it.
 - mise `minimum_release_age` requires mise `2026.4.22+`; `minimum_release_age_excludes` requires `2026.6.2+`. Exact pins and `mise.lock` entries bypass it.
 
 ## Config Locations
@@ -85,7 +91,9 @@ Each config path follows the same overrides the tool itself honors. Most tools s
 
 - `XDG_CONFIG_HOME`: `uv`, `bun`, `pnpm`, `vlt`, `mise` (all platforms); `pip`, `Poetry`, `PDM` (Linux only).
 - pip on macOS reads one user file: `$XDG_DATA_HOME/pip/pip.conf` if that directory exists (pip 26.2+), else `~/Library/Application Support/pip/pip.conf` if that directory exists, else `~/.config/pip/pip.conf`.
-- Tool-specific overrides: `POETRY_CONFIG_DIR`, `PDM_CONFIG_FILE`, `NPM_CONFIG_USERCONFIG`, `BUNDLE_USER_CONFIG` / `BUNDLE_USER_HOME`, `HEX_HOME` / `MIX_XDG`, `CARGO_HOME` (and a legacy extension-less `config` file if it is the only one), `MISE_GLOBAL_CONFIG_FILE` / `MISE_CONFIG_DIR`, `PIXI_HOME`.
+- Tool-specific overrides: `POETRY_CONFIG_DIR`, `PDM_CONFIG_FILE`, `NPM_CONFIG_USERCONFIG`, `BUNDLE_USER_CONFIG` / `BUNDLE_USER_HOME`, `HEX_HOME` / `MIX_XDG`, `CARGO_HOME` (and a legacy extension-less `config` file if it is the only one), `COMPOSER_HOME`, `MAMBARC`, `MISE_GLOBAL_CONFIG_FILE` / `MISE_CONFIG_DIR`, `PIXI_HOME`.
+- Composer reads only `$COMPOSER_HOME/config.json`. Without `COMPOSER_HOME` it uses the first existing directory of `$XDG_CONFIG_HOME/composer` (default `~/.config/composer`, considered only when an `XDG_*` variable is set or `/etc/xdg` exists, as on most Linux systems) and `~/.composer`, and otherwise the first candidate. The script resolves it the same way.
+- mamba and micromamba read only `$MAMBARC` when it is set, so the script writes there. `CONDARC` alone has the same effect, but conda reads that file too, so the script keeps writing `~/.mambarc` and warns that it is ignored until you unset `CONDARC` or set `MAMBARC`.
 - The Deno wrapper source line goes into `$ZDOTDIR/.zshrc` when `ZDOTDIR` is set.
 
 Run the script from the same environment you use for your package managers so it sees the same variables.
@@ -104,6 +112,7 @@ bash set_package_min_age_macos.sh --exception "npm:@myorg/*"
 bash set_package_min_age_macos.sh --exception "pnpm:webpack" --exception "bun:typescript"
 bash set_package_min_age_macos.sh --exception "yarn-berry:@myorg/*"
 bash set_package_min_age_macos.sh --exception "mise:npm:*"
+bash set_package_min_age_macos.sh --exception "composer:acme/*" --exception "mamba:python"
 bash set_package_min_age_macos.sh --remove-tool uv --remove-tool uv-cron
 bash set_package_min_age_macos.sh --remove-tool poetry --remove-tool bundler
 bash set_package_min_age_macos.sh --remove
@@ -122,6 +131,7 @@ bash set_package_min_age_linux.sh --exception "npm:@myorg/*"
 bash set_package_min_age_linux.sh --exception "pnpm:webpack" --exception "bun:typescript"
 bash set_package_min_age_linux.sh --exception "yarn-berry:@myorg/*"
 bash set_package_min_age_linux.sh --exception "mise:trivy"
+bash set_package_min_age_linux.sh --exception "composer:symfony/console" --exception "mamba:ca-certificates"
 bash set_package_min_age_linux.sh --remove-tool yarn-berry
 bash set_package_min_age_linux.sh --remove-tool cargo --remove-tool mise
 bash set_package_min_age_linux.sh --remove
@@ -153,6 +163,11 @@ bash set_package_min_age_linux.sh --help
 - `--exception cargo:REGISTRY`
   - registry name such as `my-registry` or `crates-io`; writes `min-publish-age = "0"` under `[registries.<name>]` (tagged with a `# set-minimum-package-release-age exception` comment so only those lines are managed). Cargo has no per-package exemptions. Registries defined inline (`my-reg = { index = ... }`) are refused rather than turned into a duplicate key.
 
+- `--exception composer:VENDOR/PACKAGE`
+  - package name such as `symfony/console`, either part may use `*` (`acme/*`); written to Composer `policy.cooldown.ignore` with the reason `set-minimum-package-release-age exception`. The script owns `ignore` while you pass `composer` exceptions. Without them, an `ignore` map is only removed when every entry carries that reason, so a hand-written one is kept.
+- `--exception mamba:PACKAGE`
+  - package name such as `python`; written as `exclude_newer_package: {"python": false}` with a `# set-minimum-package-release-age exception` comment, so only that line is managed. A hand-written `exclude_newer_package` is kept, but one spread over several lines is never rewritten (the run reports `failed` instead).
+
 Unsupported exception targets (no user-level exclusion setting upstream):
 
 - `pip`
@@ -175,7 +190,9 @@ bash set_package_min_age_linux.sh 7 \
   --exception "mise:npm:*" \
   --exception "pixi:polars" \
   --exception "hex:hexpm:myorg" \
-  --exception "cargo:my-registry"
+  --exception "cargo:my-registry" \
+  --exception "composer:acme/*" \
+  --exception "mamba:python"
 ```
 
 ### Scoped Removal
@@ -199,6 +216,8 @@ Use repeatable `--remove-tool` flags to remove settings for only selected manage
 - `bundler`
 - `hex`
 - `cargo`
+- `composer`
+- `mamba`
 - `mise`
 
 Examples:
@@ -211,6 +230,7 @@ bash set_package_min_age_linux.sh --remove-tool deno
 bash set_package_min_age_linux.sh --remove-tool yarn-berry
 bash set_package_min_age_linux.sh --remove-tool vlt --remove-tool vlt-cron
 bash set_package_min_age_linux.sh --remove-tool bundler
+bash set_package_min_age_linux.sh --remove-tool composer --remove-tool mamba
 ```
 
 ## What The Scripts Do
@@ -221,7 +241,7 @@ For each supported tool, the script:
 2. Backs up the existing config before modifying it.
 3. Adds or updates the age-gate setting using the unit each tool expects.
 4. Adds native exception settings where that package manager supports them.
-5. Runs a preflight version check for installed tools whose native age-gate features have documented minimum versions. Version probes run once per invocation, all in parallel, with stdin closed and a 5-second limit each, so a slow or broken manager (for example a Corepack download prompt) cannot block the readiness table. An installed version that is too old (or can't be detected) **blocks only that tool**: its config is left untouched and its rows show `blocked` with the reason, while every other tool is still configured and validated. The run then lists the blocked tools after the summary and exits with status 1, so upgrade the tool (or drop its `--exception`) and rerun. Bundler and Cargo only warn, because the config they ignore is still written for the upgrade, and pixi is skipped.
+5. Runs a preflight version check for installed tools whose native age-gate features have documented minimum versions. Version probes run once per invocation, all in parallel, with stdin closed and a 5-second limit each, so a slow or broken manager (for example a Corepack download prompt) cannot block the readiness table. An installed version that is too old (or can't be detected) **blocks only that tool**: its config is left untouched and its rows show `blocked` with the reason, while every other tool is still configured and validated. The run then lists the blocked tools after the summary and exits with status 1, so upgrade the tool (or drop its `--exception`) and rerun. Bundler, Cargo, Composer, and mamba only warn, because the config they ignore is still written for the upgrade, and pixi is skipped.
 6. Validates every supported tool by checking the config written for that tool.
 7. Diffs the modified file against the backup and rolls back unexpected changes.
 8. Prints the detected tools, streams one line per tool as each change is applied, verifies the written files, and ends with a summary, the changed files, and anything that needs attention (see [Output](#output)).
@@ -237,6 +257,10 @@ For each supported tool, the script:
 `Cargo` is written as `global-min-publish-age = "7 days"` under `[registry]`; `--exception cargo:NAME` adds `min-publish-age = "0"` under `[registries.NAME]`.
 
 `mise` is written as `minimum_release_age = "7d"` under `[settings]`.
+
+`Composer` is written as `config.policy.cooldown.period = "7 days"` in `config.json`. The JSON is edited in place: other members and the existing formatting are kept, new members are added as the first member of their object, and `--remove` also removes the `cooldown`, `policy`, and `config` objects it leaves empty (and the file, if nothing else is left). Instead of a line diff, the result is compared with the backup with the managed members removed, and the backup is restored if anything else changed. A config that is not valid JSON, or where `policy` or `cooldown` is not an object (for example `"policy": false`), is left untouched and reported as `failed`.
+
+`mamba` is written as `exclude_newer: 7d` in `~/.mambarc`, which both mamba and micromamba read.
 
 `vlt` is written with an absolute `before` timestamp under `config`, so the scripts also schedule a daily job that reruns the wrapper in a refresh mode for the vlt config only. The job pins the resolved vlt config path (scheduled jobs do not see your shell's `XDG_CONFIG_HOME`) and is replaced when you rerun with a different age. The job runs the script from wherever you ran it, so run it from a checkout you keep.
 
@@ -354,24 +378,23 @@ On macOS, also run it with the built-in bash 3.2, which cron and launchd use:
 
 The test suite covers shared functions directly, runs both platform wrappers end-to-end with fake package-manager binaries, checks the output layout at widths from 32 to 200 columns in ASCII and Unicode (`tests/ui_test.sh`), and checks shell compatibility (`tests/shell_test.sh`: running from bash/zsh/sh/dash, refusing to be sourced, and the Deno wrapper in bash and zsh; shells that are not installed are skipped). It clears config-location variables such as `XDG_CONFIG_HOME` so your own environment does not leak into the tests, and every test gets fake `crontab` and `launchctl` binaries so the real schedulers are never touched. Tests run in parallel (one job per CPU by default) and print in declaration order; set `TEST_JOBS=1` to run them serially.
 
-CI (`.github/workflows/test.yml`) runs the suite on Ubuntu and macOS (bash 5 and `/bin/bash` 3.2), and in Fedora, Alpine, and Debian containers.
+CI (`.github/workflows/test.yml`) runs shellcheck on the scripts and the suite on Ubuntu and macOS (bash 5 and `/bin/bash` 3.2), and in Fedora, Alpine, and Debian containers.
 
 Preferred shortcuts:
 
 ```bash
 just syntax-check
+just lint    # shellcheck, needs shellcheck installed
 just test
 just check
 ```
 
 ## Not Yet Supported
 
-These package managers have no usable user-level release-age setting yet (as of 2026-10-24). Each has an issue with the details and what would trigger adding support:
+These package managers have no usable user-level release-age setting yet (as of 2026-11-07). Each has an issue with the details and what would trigger adding support:
 
 | Tool | Why not yet | Issue |
 |---|---|---|
-| Composer | cooldown only in 2.11.0-RC1; stable 2.10 has none | [#4](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/4) |
-| mamba / micromamba | works in 2.10.0, but no installable 2.10 build exists yet; older versions silently ignore it | [#5](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/5) |
 | conda | `exclude_newer` breaks every install with the default libmamba solver | [#6](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/6) |
 | aube | user config works from 1.9.0, but 2.8.2 ignores the gate on a cold cache | [#7](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/7) |
 | NuGet / dotnet | package update cooldown not released yet | [#8](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/8) |

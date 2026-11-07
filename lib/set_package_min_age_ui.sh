@@ -26,6 +26,8 @@ UI_VERSION_WIDTH=10
 UI_MIN_TEXT_WIDTH=20
 UI_STACK_INDENT=6
 
+# Filled and printed by the shared library (record_preflight_skip, print_tool_overview).
+# shellcheck disable=SC2034
 UI_NOT_INSTALLED=()
 
 # Plain defaults so helpers are safe before ui_init runs; ui_init replaces them.

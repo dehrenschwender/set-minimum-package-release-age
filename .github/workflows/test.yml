@@ -9,6 +9,14 @@ permissions:
   contents: read
 
 jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: shellcheck (warning and above)
+        run: shellcheck -x -S warning lib/*.sh set_package_min_age_*.sh
+
   native:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -17,7 +25,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install zsh
         if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
@@ -51,7 +59,7 @@ jobs:
           - image: debian:stable-slim
             setup: apt-get update -qq && apt-get install -y -qq diffutils zsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Test suite
         run: |
           docker run --rm -v "$PWD:/repo:ro" "${{ matrix.image }}" sh -c \
