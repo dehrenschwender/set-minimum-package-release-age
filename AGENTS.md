@@ -101,6 +101,7 @@ If dependencies are added later:
 2026-11-08: Issue triage after merging #24; no code changes, and no dependency-managed ecosystems exist, so no packages were updated. All open issues were re-checked and their "Last checked" lines refreshed. Changes found, verified in Docker:
 - conda 26.10.0 made `conda-rattler-solver` the default solver. Rattler 26.10.2 and libmamba 26.10.1 both still reject `exclude_newer`, so #6 now also waits for conda/conda-rattler-solver#49.
 - NuGet's cooldown works in the .NET 11 RC3 SDK (NuGet 8.0.0-rc): `minPublishAgeHours` and `minPublishAgeExceptions` in the user `NuGet.Config` gate `dotnet package add`, and .NET 10 (NuGet 7.9) ignores them. A cooldown makes floating versions fail restore with NU1020, which needs a design decision before #8 is implemented.
+- aube 2.9.0 still ignores the gate on a cold cache (#7): with a 30-day gate the first install took eslint 10.14.0, and the warm reinstall took 10.12.0.
 - pixi 0.84 added a config.toml `exclude-newer` that seeds new workspaces and global manifests and applies to `pixi exec`, but not to existing workspaces; tracked in #25. The global-manifest line this script writes still works on 0.84.1 without deprecation warnings.
 
 Recorded package changes: none recorded.
@@ -254,11 +255,11 @@ The tests use a temporary `HOME`, fake manager binaries, and fake `crontab` and 
 - GitHub #3: Deno has no user-level minimum dependency age setting, so the shell wrapper remains; replace it once Deno ships one.
 - Yarn Berry 4.17+ upstream bug (yarnpkg/berry#7192): `npmScopes` entries without their own gate use the `1d` default, not the global `npmMinimalAgeGate`.
 - Unsupported package managers each have a GitHub issue with the reason and the trigger for adding support (#6–#22): conda #6, aube #7, NuGet #8, RubyGems `gem` #9, Go #11, Maven #12, Gradle #13, Homebrew #14, Dart pub #15, Julia Pkg #16, Swift PM #17, CocoaPods #18, CPAN #19, Nix #20, aqua #21, asdf #22. Keep the README "Not Yet Supported" table in sync when one is added or closed. pipx (#10) was closed as covered by the pip/uv config, and Composer (#4) and mamba/micromamba (#5) were closed when support was added.
-- Findings from real-binary checks (2026-10-24) are in the issues:
+- Findings from real-binary checks (2026-10-24, updated 2026-11-08) are in the issues:
   - Composer 2.11 needs the string `"7 days"` (a bare integer means seconds), and 2.10 silently ignores the setting.
   - mamba/micromamba before 2.10 silently ignore the setting, and conda-forge channels publish no `indexed_timestamp`, so the cutoff uses build timestamps.
   - conda's libmamba and rattler solvers hard-fail with it (still true for rattler 26.10.2 and libmamba 26.10.1 on 2026-11-08; rattler is conda's default from 26.10.0, so support needs conda/conda-rattler-solver#49 as well as conda/conda-libmamba-solver#905).
   - NuGet's cooldown (`minPublishAgeHours`, `minPublishAgeExceptions`) works in the .NET 11 RC3 SDK (NuGet 8.0.0-rc); .NET 10 ignores it, and with a cooldown set, floating versions fail restore with NU1020.
-  - aube's user config needs 1.9.0+, but 2.8.2 ignores the gate on a cold cache.
+  - aube's user config needs 1.9.0+, but 2.8.2 and 2.9.0 ignore the gate on a cold cache (re-verified 2026-11-08 with a 30-day gate; a warm cache resolves correctly).
   - RubyGems 4.1 beta reads `BUNDLE_COOLDOWN`.
 - GitHub #25: pixi 0.84.0+ reads `exclude-newer` from its `config.toml`, but only for `pixi exec`, new global manifests, and `pixi init`, never for existing workspaces (verified 2026-11-08); pixi 0.83 warns about the key. Writing it is tracked there. Also revisit pixi workspace config if a setting that applies to existing workspaces appears.
