@@ -391,13 +391,13 @@ just check
 
 ## Not Yet Supported
 
-These package managers have no usable user-level release-age setting yet (as of 2026-11-07). Each has an issue with the details and what would trigger adding support:
+These package managers have no usable user-level release-age setting yet (as of 2026-11-08). Each has an issue with the details and what would trigger adding support:
 
 | Tool | Why not yet | Issue |
 |---|---|---|
-| conda | `exclude_newer` breaks every install with the default libmamba solver | [#6](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/6) |
-| aube | user config works from 1.9.0, but 2.8.2 ignores the gate on a cold cache | [#7](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/7) |
-| NuGet / dotnet | package update cooldown not released yet | [#8](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/8) |
+| conda | `exclude_newer` breaks every install with the default rattler (26.10+) and libmamba solvers | [#6](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/6) |
+| aube | user config works from 1.9.0, but the gate is still ignored on a cold cache (2.9.0) | [#7](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/7) |
+| NuGet / dotnet | cooldown works in the .NET 11 RC (NuGet 8.0) but is not released yet; floating versions then fail restore (NU1020) | [#8](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/8) |
 | RubyGems `gem` | 4.1 (beta) reads the `BUNDLE_COOLDOWN` we already write; waiting for 4.1.0 | [#9](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/9) |
 | Go modules | proposal on hold | [#11](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/11) |
 | Maven | declined upstream | [#12](https://github.com/dehrenschwender/set-minimum-package-release-age/issues/12) |
