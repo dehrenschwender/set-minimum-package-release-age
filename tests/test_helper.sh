@@ -25,6 +25,7 @@ TEST_NEXT_TO_WAIT=0
 TEST_HIDDEN_SYSTEM_COMMANDS=(
     pip pip3 uv uvx poetry pdm pipx npm npx pnpm pnpx bun bunx deno pixi vlt
     yarn yarnpkg corepack node bundle bundler gem mix elixir cargo rustup mise
+    composer php mamba micromamba conda
     crontab launchctl
 )
 create_test_system_bin() {
@@ -178,7 +179,22 @@ setup_test_env() {
     unset COLUMNS NO_COLOR FORCE_COLOR
     unset XDG_CONFIG_HOME ZDOTDIR POETRY_CONFIG_DIR NPM_CONFIG_USERCONFIG npm_config_userconfig \
         BUNDLE_USER_CONFIG BUNDLE_USER_HOME HEX_HOME MIX_XDG \
-        XDG_DATA_HOME PDM_CONFIG_FILE MISE_GLOBAL_CONFIG_FILE MISE_CONFIG_DIR CARGO_HOME PIXI_HOME
+        XDG_DATA_HOME PDM_CONFIG_FILE MISE_GLOBAL_CONFIG_FILE MISE_CONFIG_DIR CARGO_HOME PIXI_HOME \
+        COMPOSER_HOME MAMBARC CONDARC
+    # The library derives these from HOME when it is sourced and keeps values
+    # that are already set, so a second setup_test_env in the same shell would
+    # otherwise reuse the previous test's paths.
+    unset PIP_CONFIG_PATH UV_CONFIG_PATH POETRY_CONFIG_PATH NPMRC_PATH PNPM_CONFIG_PATH PNPM_RC_PATH \
+        BUNFIG_PATH YARNRC_PATH YARNRC_YML_PATH VLT_CONFIG_PATH BUNDLER_CONFIG_PATH HEX_CONFIG_PATH \
+        PDM_CONFIG_PATH MISE_CONFIG_PATH CARGO_CONFIG_PATH PIXI_GLOBAL_MANIFEST_PATH \
+        PIXI_PLATFORM_GLOBAL_MANIFEST_PATH COMPOSER_CONFIG_PATH MAMBA_CONFIG_PATH VLT_LAUNCHD_PLIST_PATH
+    # Composer switches to the XDG location when any XDG_* variable is set or
+    # /etc/xdg exists, so make that deterministic: no XDG_* and no /etc/xdg.
+    local xdg_var
+    for xdg_var in $(compgen -e XDG_ 2>/dev/null || true); do
+        unset "$xdg_var"
+    done
+    export COMPOSER_SYSTEM_XDG_DIR="$TEST_ROOT/no-etc-xdg"
     export TEST_BIN_DIR="$TEST_ROOT/bin"
     export TEST_CRONTAB_FILE="$TEST_ROOT/crontab"
     export PATH="$TEST_BIN_DIR:$TEST_SYSTEM_BIN"

@@ -1251,7 +1251,7 @@ test_print_tool_overview_yarn_v1() {
     assert_contains "$output" "$(expect_tool_row '*' vlt 0.0.0)"
     assert_contains "$output" "$(expect_tool_row '*' Bundler 4.0.15)"
     assert_contains "$output" "$(expect_tool_row '*' 'yarn v1' 1.22.22) $TEST_BIN_DIR/yarn"
-    assert_contains "$(flatten_output "$output")" "Not installed: PDM, bun, Cargo, mise, yarn v2+."
+    assert_contains "$(flatten_output "$output")" "Not installed: PDM, bun, Cargo, Composer, mamba, mise, yarn v2+."
     cleanup_test_env
 }
 
@@ -1556,13 +1556,15 @@ test_main_output_includes_readiness_and_results() {
     assert_contains "$output" "$(expect_change_row '*' vlt added)before = 2026-03-29T00:00:00Z (4d window)"
     assert_contains "$output" "$(expect_change_row '*' Bundler added)cooldown = 4d"
     assert_contains "$output" "$(expect_change_row '*' 'vlt cron' added)"
+    assert_contains "$output" "$(expect_change_row '*' Composer added)policy.cooldown.period = 4 days"
+    assert_contains "$output" "$(expect_change_row '*' mamba added)exclude_newer = 4d"
     # pip shows up once under Tools and once under Changes, never as extra rows.
     assert_eq 2 "$(grep -c '^  [*=x!-] pip ' <<< "$output")"
     # The no-op legacy uv cron cleanup and per-tool "ok" validation rows are not shown.
     [[ "$output" != *"uv cron"* ]] || fail "did not expect a uv cron row"
     [[ "$output" != *"mismatch"* ]] || fail "did not expect validation mismatches"
     [[ "$output" != *"Needs attention"* ]] || fail "did not expect a Needs attention section"
-    assert_contains "$flat" "failed | 15/15 verified"
+    assert_contains "$flat" "failed | 17/17 verified"
     assert_contains "$output" "  $(printf '%-12s' pip) ~/.config/pip/pip.conf"
     assert_contains "$output" "Done."
     cleanup_test_env
@@ -1744,6 +1746,294 @@ test_scoped_remove_only_bundler() {
     cleanup_test_env
 }
 
+test_setup_remove_composer() {
+    setup_test_env
+    load_common_library
+    parse_args 7
+
+    local conf="$HOME/.composer/config.json" original
+    assert_eq "$conf" "$COMPOSER_CONFIG_PATH"
+    mkdir -p "$(dirname "$conf")"
+    printf '{\n    "config": {\n        "vendor-dir": "lib",\n        "policy": {\n            "advisories": {\n                "block": true\n            }\n        }\n    },\n    "repositories": [\n        {"type": "vcs", "url": "https://example.com/repo.git"}\n    ]\n}\n' > "$conf"
+    original=$(cat "$conf")
+
+    setup_composer >/dev/null
+    assert_array_contains "composer" "${UPDATED_TOOLS[@]-}"
+    assert_eq '"7 days"' "$(json_edit get "$conf" config.policy.cooldown.period)"
+    assert_eq '{"block":true}' "$(json_edit get "$conf" config.policy.advisories)"
+    assert_eq '"lib"' "$(json_edit get "$conf" config.vendor-dir)"
+    assert_file_contains "$conf" '            "cooldown": {'
+    assert_file_contains "$conf" '                "period": "7 days"'
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -I -c 'import json,sys; json.load(open(sys.argv[1]))' "$conf" || fail "not valid JSON: $(cat "$conf")"
+    fi
+    validate_configs >/dev/null
+    assert_array_contains "composer" "${VALIDATED_TOOLS[@]-}"
+
+    reset_status_arrays
+    setup_composer >/dev/null
+    assert_array_contains "composer" "${SKIPPED_TOOLS[@]-}"
+
+    parse_args 3 --exception 'composer:acme/*' --exception composer:symfony/console
+    reset_status_arrays
+    local output
+    output=$(setup_composer; printf '\n%s' "${UPDATED_TOOLS[*]-}")
+    assert_contains "$output" "7 days -> policy.cooldown.period = 3 days; exceptions=2"
+    assert_contains "$output" "composer"
+    setup_composer >/dev/null
+    assert_eq '{"acme/*":"set-minimum-package-release-age exception","symfony/console":"set-minimum-package-release-age exception"}' \
+        "$(json_edit get "$conf" config.policy.cooldown.ignore)"
+    reset_status_arrays
+    validate_configs >/dev/null
+    assert_array_contains "composer" "${VALIDATED_TOOLS[@]-}"
+
+    # Without exceptions, our ignore map goes away again.
+    parse_args 3
+    reset_status_arrays
+    setup_composer >/dev/null
+    assert_array_contains "composer" "${UPDATED_TOOLS[@]-}"
+    if json_edit get "$conf" config.policy.cooldown.ignore >/dev/null; then
+        fail "managed ignore map should have been removed: $(cat "$conf")"
+    fi
+
+    reset_status_arrays
+    remove_composer >/dev/null
+    assert_array_contains "composer" "${UPDATED_TOOLS[@]-}"
+    assert_eq "$original" "$(cat "$conf")"
+    reset_status_arrays
+    remove_composer >/dev/null
+    assert_array_contains "composer" "${SKIPPED_TOOLS[@]-}"
+
+    # A hand-written ignore map is kept by setup and by removal.
+    JSON_EDIT_VALUE=$'{\n\t"acme/legacy": "reviewed"\n}' json_edit_in_place set "$conf" config.policy.cooldown.ignore
+    parse_args 7
+    reset_status_arrays
+    setup_composer >/dev/null
+    assert_eq '{"acme/legacy":"reviewed"}' "$(json_edit get "$conf" config.policy.cooldown.ignore)"
+    validate_configs >/dev/null
+    assert_array_contains "composer" "${VALIDATED_TOOLS[@]-}"
+    remove_composer >/dev/null
+    assert_eq '{"acme/legacy":"reviewed"}' "$(json_edit get "$conf" config.policy.cooldown.ignore)"
+    if json_edit get "$conf" config.policy.cooldown.period >/dev/null; then
+        fail "period should have been removed"
+    fi
+    cleanup_test_env
+}
+
+test_composer_creates_and_deletes_its_own_file() {
+    setup_test_env
+    load_common_library
+    parse_args 7 --exception 'composer:acme/*'
+
+    local conf="$COMPOSER_CONFIG_PATH"
+    assert_not_exists "$conf"
+    setup_composer >/dev/null
+    assert_eq "$(printf '{\n    "config": {\n        "policy": {\n            "cooldown": {\n                "ignore": {\n                    "acme/*": "set-minimum-package-release-age exception"\n                },\n                "period": "7 days"\n            }\n        }\n    }\n}')" "$(cat "$conf")"
+
+    parse_args --remove
+    remove_composer >/dev/null
+    assert_not_exists "$conf"
+    cleanup_test_env
+}
+
+test_composer_leaves_unusable_config_alone() {
+    setup_test_env
+    load_common_library
+    parse_args 7
+
+    local conf="$COMPOSER_CONFIG_PATH" content output
+    mkdir -p "$(dirname "$conf")"
+    for content in '{"config": {"policy": false}}' '{"config": {"policy": {"cooldown": false}}}' '{"config": {,}}' '[]'; do
+        printf '%s\n' "$content" > "$conf"
+        reset_status_arrays
+        output=$(setup_composer)
+        assert_contains "$output" "Composer"
+        assert_contains "$(flatten_output "$output")" "left unchanged"
+        assert_eq "$content" "$(cat "$conf")"
+        setup_composer >/dev/null
+        assert_array_contains "composer" "${FAILED_TOOLS[@]-}"
+        remove_composer >/dev/null
+        assert_eq "$content" "$(cat "$conf")"
+    done
+    printf '{"config": {,}}\n' > "$conf"
+    assert_contains "$(flatten_output "$(remove_composer)")" "is not valid JSON; left unchanged"
+    cleanup_test_env
+}
+
+test_composer_home_resolution() {
+    setup_test_env
+    load_common_library
+
+    assert_eq "$HOME/.composer" "$(composer_home_dir)"
+    assert_eq "/custom/composer" "$(COMPOSER_HOME=/custom/composer composer_home_dir)"
+    # Any XDG_* variable switches to the XDG location while neither dir exists.
+    assert_eq "$HOME/.config/composer" "$(export XDG_RUNTIME_DIR=/run/user/1; composer_home_dir)"
+    assert_eq "$TEST_ROOT/xdg/composer" "$(export XDG_CONFIG_HOME="$TEST_ROOT/xdg"; composer_home_dir)"
+    # So does /etc/xdg.
+    mkdir -p "$TEST_ROOT/etc-xdg"
+    assert_eq "$HOME/.config/composer" "$(COMPOSER_SYSTEM_XDG_DIR="$TEST_ROOT/etc-xdg" composer_home_dir)"
+    # An existing ~/.composer wins over a missing XDG dir, an existing XDG dir wins over both.
+    mkdir -p "$HOME/.composer"
+    assert_eq "$HOME/.composer" "$(COMPOSER_SYSTEM_XDG_DIR="$TEST_ROOT/etc-xdg" composer_home_dir)"
+    mkdir -p "$HOME/.config/composer"
+    assert_eq "$HOME/.config/composer" "$(COMPOSER_SYSTEM_XDG_DIR="$TEST_ROOT/etc-xdg" composer_home_dir)"
+    # Without XDG, ~/.config/composer is never used.
+    assert_eq "$HOME/.composer" "$(composer_home_dir)"
+    cleanup_test_env
+}
+
+test_setup_remove_mamba() {
+    setup_test_env
+    load_common_library
+    parse_args 7
+
+    local rc="$HOME/.mambarc" original
+    assert_eq "$rc" "$MAMBA_CONFIG_PATH"
+    printf 'channels:\n  - conda-forge\n# keep me\nalways_yes: true\n' > "$rc"
+    original=$(cat "$rc")
+
+    setup_mamba >/dev/null
+    assert_array_contains "mamba" "${UPDATED_TOOLS[@]-}"
+    assert_eq "$original"$'\n''exclude_newer: 7d' "$(cat "$rc")"
+    validate_configs >/dev/null
+    assert_array_contains "mamba" "${VALIDATED_TOOLS[@]-}"
+    reset_status_arrays
+    setup_mamba >/dev/null
+    assert_array_contains "mamba" "${SKIPPED_TOOLS[@]-}"
+
+    parse_args 3 --exception mamba:python --exception mamba:ca-certificates
+    reset_status_arrays
+    local output
+    output=$(setup_mamba)
+    assert_contains "$output" "7d -> exclude_newer = 3d; exceptions=2"
+    setup_mamba >/dev/null
+    assert_file_contains "$rc" 'exclude_newer: 3d'
+    assert_file_contains "$rc" 'exclude_newer_package: {"python": false, "ca-certificates": false}  # set-minimum-package-release-age exception'
+    reset_status_arrays
+    validate_configs >/dev/null
+    assert_array_contains "mamba" "${VALIDATED_TOOLS[@]-}"
+
+    # Without exceptions the marked line goes away.
+    parse_args 3
+    reset_status_arrays
+    setup_mamba >/dev/null
+    assert_file_not_contains "$rc" 'exclude_newer_package'
+
+    reset_status_arrays
+    remove_mamba >/dev/null
+    assert_eq "$original" "$(cat "$rc")"
+    reset_status_arrays
+    remove_mamba >/dev/null
+    assert_array_contains "mamba" "${SKIPPED_TOOLS[@]-}"
+
+    # A hand-written exclude_newer_package is preserved by setup and removal.
+    printf 'exclude_newer_package:\n  numpy: 1d\n' >> "$rc"
+    parse_args 7
+    reset_status_arrays
+    setup_mamba >/dev/null
+    assert_file_contains "$rc" '  numpy: 1d'
+    validate_configs >/dev/null
+    assert_array_contains "mamba" "${VALIDATED_TOOLS[@]-}"
+    # ...but with exceptions a multi-line block cannot be replaced safely.
+    parse_args 7 --exception mamba:python
+    reset_status_arrays
+    setup_mamba >/dev/null
+    assert_array_contains "mamba" "${FAILED_TOOLS[@]-}"
+    assert_file_contains "$rc" '  numpy: 1d'
+    remove_mamba >/dev/null
+    assert_file_contains "$rc" '  numpy: 1d'
+    assert_file_not_contains "$rc" 'exclude_newer: '
+    cleanup_test_env
+
+    # A file created by the script is deleted on removal; MAMBARC moves it.
+    setup_test_env
+    export MAMBARC="$TEST_ROOT/custom-mambarc"
+    load_common_library
+    parse_args 5
+    assert_eq "$MAMBARC" "$MAMBA_CONFIG_PATH"
+    setup_mamba >/dev/null
+    assert_eq "exclude_newer: 5d" "$(cat "$MAMBARC")"
+    assert_not_exists "$HOME/.mambarc"
+    remove_mamba >/dev/null
+    assert_not_exists "$MAMBARC"
+    cleanup_test_env
+}
+
+test_preflight_composer_mamba() {
+    setup_test_env
+    install_fake_detection_tools "4.12.0"
+    install_fake_version_binary composer "Composer version 2.10.3 2026-09-01 10:00:00"
+    install_fake_version_binary micromamba "2.9.0"
+    load_common_library
+
+    local output flat
+    output=$(main 4 --exception 'composer:acme/*' --exception mamba:python)
+    flat=$(flatten_output "$output")
+    assert_contains "$output" "$(expect_tool_row '!' Composer 2.10.3)"
+    assert_contains "$flat" "policy.cooldown requires >= 2.11.0; config can still be written"
+    assert_contains "$output" "$(expect_tool_row '!' mamba 2.9.0)"
+    assert_contains "$output" "/bin/micromamba"
+    assert_contains "$flat" "exclude_newer requires >= 2.10.0; config can still be written"
+    assert_contains "$output" "$(expect_change_row '*' Composer added)policy.cooldown.period = 4 days; exceptions=1"
+    assert_contains "$output" "$(expect_change_row '*' mamba added)exclude_newer = 4d; exceptions=1"
+    assert_file_contains "$HOME/.composer/config.json" '"period": "4 days"'
+    assert_file_contains "$HOME/.mambarc" 'exclude_newer: 4d'
+    [[ "$output" != *"mismatch"* ]] || fail "did not expect validation mismatches"
+    cleanup_test_env
+
+    setup_test_env
+    install_fake_detection_tools "4.12.0"
+    install_fake_version_binary composer "Composer version 2.11.1 2026-10-30 14:52:10"
+    install_fake_version_binary mamba "2.10.0"
+    install_fake_version_binary micromamba "2.9.0"
+    load_common_library
+    output=$(main 4)
+    assert_contains "$output" "$(expect_tool_row '*' Composer 2.11.1)"
+    assert_contains "$output" "$(expect_tool_row '*' mamba 2.10.0)"
+    assert_contains "$output" "/bin/mamba"$'\n'
+    cleanup_test_env
+
+    # CONDARC hides ~/.mambarc from mamba; say so instead of reporting success silently.
+    setup_test_env
+    export CONDARC="$TEST_ROOT/condarc"
+    install_fake_detection_tools "4.12.0"
+    install_fake_version_binary mamba "2.10.0"
+    load_common_library
+    output=$(main 4)
+    flat=$(flatten_output "$output")
+    assert_contains "$output" "$(expect_tool_row '!' mamba 2.10.0)"
+    assert_contains "$flat" "CONDARC is set, so mamba reads only that file and ignores ~/.mambarc"
+    assert_contains "$flat" "Needs attention"
+    assert_not_exists "$CONDARC"
+    cleanup_test_env
+}
+
+test_composer_mamba_exceptions_parse_and_scoped_remove() {
+    setup_test_env
+    install_fake_detection_tools "4.12.0"
+    load_common_library
+    parse_args --exception 'composer:acme/*' --exception composer:symfony/console --exception mamba:python --exception mamba:ca-certificates
+    assert_eq "acme/* symfony/console" "${COMPOSER_EXCEPTIONS[*]}"
+    assert_eq "python ca-certificates" "${MAMBA_EXCEPTIONS[*]}"
+
+    local spec output
+    for spec in 'composer:monolog' 'composer:"a"/b' 'composer:a/b c' 'mamba:a b' 'mamba:-x' 'mamba:"x"'; do
+        output=$( ( parse_args --exception "$spec" ) 2>&1 ) && fail "expected $spec to be rejected"
+        assert_contains "$output" "Error:"
+    done
+
+    main 6 --exception 'composer:acme/*' --exception mamba:python >/dev/null
+    assert_exists "$HOME/.composer/config.json"
+    assert_exists "$HOME/.mambarc"
+    output=$(main --remove-tool composer)
+    assert_contains "$output" "$(expect_change_row '*' Composer removed)"
+    assert_not_exists "$HOME/.composer/config.json"
+    assert_exists "$HOME/.mambarc"
+    main --remove-tool mamba >/dev/null
+    assert_not_exists "$HOME/.mambarc"
+    cleanup_test_env
+}
+
 run_test "usage" test_usage || true
 run_test "parse_args_success" test_parse_args_success || true
 run_test "parse_args_failures" test_parse_args_failures || true
@@ -1812,4 +2102,11 @@ run_test "cargo_registry_exemptions" test_cargo_registry_exemptions || true
 run_test "new_exception_targets_parse" test_new_exception_targets_parse || true
 run_test "blocked_tool_does_not_stop_other_tools" test_blocked_tool_does_not_stop_other_tools || true
 run_test "multiple_blocked_tools_are_listed" test_multiple_blocked_tools_are_listed || true
+run_test "setup_remove_composer" test_setup_remove_composer || true
+run_test "composer_creates_and_deletes_its_own_file" test_composer_creates_and_deletes_its_own_file || true
+run_test "composer_leaves_unusable_config_alone" test_composer_leaves_unusable_config_alone || true
+run_test "composer_home_resolution" test_composer_home_resolution || true
+run_test "setup_remove_mamba" test_setup_remove_mamba || true
+run_test "preflight_composer_mamba" test_preflight_composer_mamba || true
+run_test "composer_mamba_exceptions_parse_and_scoped_remove" test_composer_mamba_exceptions_parse_and_scoped_remove || true
 finish_tests

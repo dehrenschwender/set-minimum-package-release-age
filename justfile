@@ -21,6 +21,9 @@ syntax-check:
   bash -n tests/ui_test.sh
   bash -n {{test_runner}}
 
+lint:
+  shellcheck -x -S warning {{common_lib}} lib/set_package_min_age_ui.sh {{linux_script}} {{macos_script}}
+
 test:
   bash {{test_runner}}
 
